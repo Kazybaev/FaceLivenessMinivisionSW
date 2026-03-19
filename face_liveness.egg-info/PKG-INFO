@@ -1,0 +1,30 @@
+Metadata-Version: 2.4
+Name: face-liveness
+Version: 1.0.0
+Summary: Face Liveness Detection — heuristic + deep learning anti-spoofing
+Requires-Python: >=3.9
+License-File: LICENSE
+Requires-Dist: fastapi>=0.104
+Requires-Dist: uvicorn[standard]>=0.24
+Requires-Dist: python-multipart>=0.0.6
+Requires-Dist: pydantic>=2.5
+Requires-Dist: pydantic-settings>=2.1
+Requires-Dist: PyYAML>=6.0
+Requires-Dist: structlog>=23.2
+Requires-Dist: numpy>=1.26
+Requires-Dist: opencv-contrib-python>=4.8
+Requires-Dist: torch>=2.1
+Requires-Dist: torchvision>=0.16
+Requires-Dist: mediapipe>=0.10
+Requires-Dist: Pillow>=10.0
+Provides-Extra: train
+Requires-Dist: tensorboardX>=2.6; extra == "train"
+Requires-Dist: tqdm>=4.66; extra == "train"
+Requires-Dist: easydict>=1.10; extra == "train"
+Requires-Dist: matplotlib>=3.8; extra == "train"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23; extra == "dev"
+Requires-Dist: httpx>=0.25; extra == "dev"
+Requires-Dist: ruff>=0.1; extra == "dev"
+Dynamic: license-file

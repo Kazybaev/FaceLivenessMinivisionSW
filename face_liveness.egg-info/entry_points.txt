@@ -1,0 +1,2 @@
+[console_scripts]
+face-liveness-api = app.main:run
