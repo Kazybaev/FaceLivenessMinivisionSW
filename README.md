@@ -57,25 +57,88 @@ git clone https://github.com/Kazybaev/FaceLivenessMinivisionSW.git
 cd FaceLivenessMinivisionSW
 ```
 
-### 2. Установить зависимости
+### 2. Установить Git LFS и скачать модели
+
+Веса моделей хранятся через Git LFS. Без этого шага `.pth` файлы будут пустышками (132 байта).
 
 ```bash
-pip install -r req.txt
+sudo apt-get install -y git-lfs   # Ubuntu/Debian
+git lfs install
+git lfs pull
 ```
 
-Или вручную:
+Проверка — файлы должны весить ~1.8 МБ каждый:
 
 ```bash
-pip install opencv-python mediapipe torch numpy
+ls -la resources/anti_spoof_models/
 ```
 
-### 3. Запустить
+### 3. Создать виртуальное окружение и установить зависимости
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+### 4. Запуск тестов
+
+```bash
+# Все тесты
+pytest tests/ -v
+
+# Только unit-тесты
+pytest tests/unit/ -v
+
+# Только интеграционные тесты
+pytest tests/integration/ -v
+```
+
+### 5a. Запуск — режим веб-камеры (standalone)
+
+```bash
+source .venv/bin/activate
 python liveness_detection.py
 ```
 
 При первом запуске файл `face_landmarker.task` (~2 МБ) скачается автоматически.
+
+### 5b. Запуск — REST API сервер (FastAPI)
+
+```bash
+source .venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Или через Docker:
+
+```bash
+docker compose up --build
+```
+
+После запуска API доступен на `http://localhost:8000`.
+
+#### API-эндпоинты
+
+| Метод | URL | Описание |
+|-------|-----|----------|
+| `GET` | `/health` | Проверка что сервер жив |
+| `GET` | `/health/ready` | Проверка что модели загружены |
+| `POST` | `/api/v1/liveness/analyze` | Анализ одного изображения (form-data, поле `file`) |
+| `POST` | `/api/v1/liveness/session` | Создать сессию для видеопотока |
+| `POST` | `/api/v1/liveness/session/{id}/frame` | Отправить кадр в сессию |
+| `DELETE` | `/api/v1/liveness/session/{id}` | Удалить сессию |
+
+#### Пример вызова
+
+```bash
+# Анализ одного фото
+curl -X POST http://localhost:8000/api/v1/liveness/analyze \
+  -F "file=@images/sample/image_T1.jpg"
+
+# Ответ:
+# {"verdict":"REAL","confidence":0.999,"method":"deep_learning","details":{...}}
+```
 
 ---
 
