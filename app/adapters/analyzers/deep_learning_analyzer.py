@@ -34,6 +34,10 @@ class DeepLearningAnalyzer:
         self._score_history: deque[float] = deque(maxlen=config.smoothing_frames)
         self._load_models(model_repo)
 
+    @property
+    def model_names(self) -> list[str]:
+        return sorted(self._models.keys())
+
     def _load_models(self, model_repo: ModelRepositoryPort) -> None:
         model_infos = model_repo.list_models()
         for info in model_infos:
@@ -44,7 +48,9 @@ class DeepLearningAnalyzer:
         logger.info("models_loaded", count=len(self._models))
 
     def analyze(self, image: np.ndarray, face: FaceRegion) -> LivenessResult:
-        real_prob, fake_prob = self._predict(face.image)
+        prediction = self.predict_face(face.image, smooth=False)
+        real_prob = prediction["real_prob"]
+        fake_prob = prediction["fake_prob"]
         if real_prob is None:
             return LivenessResult(
                 verdict=LivenessVerdict.UNCERTAIN,
@@ -74,16 +80,16 @@ class DeepLearningAnalyzer:
 
     def process_frame(self, image: np.ndarray, face: FaceRegion) -> LivenessResult:
         """Stateful version with score smoothing."""
-        real_prob, fake_prob = self._predict(face.image)
+        prediction = self.predict_face(face.image, smooth=True)
+        real_prob = prediction["real_prob"]
+        fake_prob = prediction["fake_prob"]
+        smoothed = prediction["smoothed"]
         if real_prob is None:
             return LivenessResult(
                 verdict=LivenessVerdict.UNCERTAIN,
                 confidence=0.0,
                 method=DetectionMethod.DEEP_LEARNING,
             )
-
-        self._score_history.append(real_prob)
-        smoothed = float(np.mean(self._score_history))
 
         is_real = smoothed >= 0.5
         confidence = smoothed if is_real else (1 - smoothed)
@@ -108,6 +114,23 @@ class DeepLearningAnalyzer:
 
     def reset(self) -> None:
         self._score_history.clear()
+
+    def predict_face(self, face: np.ndarray, smooth: bool = False) -> dict[str, float | None]:
+        real_prob, fake_prob = self._predict(face)
+        if real_prob is None:
+            return {"real_prob": None, "fake_prob": None, "smoothed": None}
+
+        if smooth:
+            self._score_history.append(real_prob)
+            smoothed = float(np.mean(self._score_history))
+        else:
+            smoothed = float(real_prob)
+
+        return {
+            "real_prob": float(real_prob),
+            "fake_prob": float(fake_prob),
+            "smoothed": float(smoothed),
+        }
 
     def _predict(self, face: np.ndarray) -> tuple[float | None, float | None]:
         real_scores: list[float] = []

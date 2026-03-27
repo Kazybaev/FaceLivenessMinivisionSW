@@ -1,4 +1,4 @@
-"""FastAPI endpoints for liveness detection."""
+"""FastAPI endpoints for liveness detection and local turnstile control plane."""
 from __future__ import annotations
 
 import asyncio
@@ -9,18 +9,22 @@ import numpy as np
 import structlog
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
-from app.infrastructure.api.schemas import (
-    LivenessResponse, SessionResponse, HealthResponse, ReadyResponse,
-)
 from app.infrastructure.api.dependencies import get_container
+from app.infrastructure.api.schemas import (
+    DecisionSnapshot,
+    HealthResponse,
+    LatestDecisionResponse,
+    LivenessResponse,
+    ReadyResponse,
+    SessionResponse,
+)
 from app.infrastructure.container import Container
-from app.domain.enums import LivenessVerdict
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
-# In-memory session storage (for stateful heuristic analysis)
+# In-memory session storage for legacy stateful heuristic analysis.
 _sessions: dict[str, object] = {}
 
 
@@ -30,6 +34,26 @@ def _decode_image(data: bytes) -> np.ndarray:
     if img is None:
         raise HTTPException(status_code=400, detail="Could not decode image")
     return img
+
+
+def _decision_snapshot(decision) -> DecisionSnapshot:
+    verdict = decision.controller_verdict if decision.controller_verdict is not None else None
+    return DecisionSnapshot(
+        session_id=decision.session_id,
+        state=decision.state,
+        verdict=verdict,
+        confidence=decision.confidence,
+        reason=decision.reason,
+        reason_codes=decision.reason_codes,
+        latency_ms=decision.latency_ms,
+        camera_id=decision.camera_id,
+        device_id=decision.device_id,
+        timestamp_utc=decision.timestamp_utc,
+        live_score=decision.live_score,
+        heuristic_score=decision.heuristic_score,
+        deep_learning_score=decision.deep_learning_score,
+        details=decision.details,
+    )
 
 
 def _build_session_state(container: Container) -> dict[str, object]:
@@ -124,12 +148,43 @@ async def delete_session(session_id: str):
     return {"status": "deleted"}
 
 
+@router.post("/api/v1/turnstile/frame", response_model=DecisionSnapshot)
+async def process_turnstile_frame(
+    file: UploadFile = File(...),
+    container: Container = Depends(get_container),
+):
+    data = await file.read()
+    image = _decode_image(data)
+    decision = await asyncio.to_thread(container.turnstile_engine.process_frame, image)
+    return _decision_snapshot(decision)
+
+
+@router.post("/api/v1/turnstile/reset")
+async def reset_turnstile(container: Container = Depends(get_container)):
+    container.turnstile_engine.reset()
+    return {"status": "reset"}
+
+
+@router.get("/decision/latest", response_model=LatestDecisionResponse)
+async def latest_decision(container: Container = Depends(get_container)):
+    decision = container.turnstile_engine.get_latest_decision()
+    return LatestDecisionResponse(
+        status="ok",
+        latest_decision=_decision_snapshot(decision) if decision is not None else None,
+    )
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health():
     return HealthResponse(status="ok")
 
 
+@router.get("/ready", response_model=ReadyResponse)
 @router.get("/health/ready", response_model=ReadyResponse)
 async def readiness(container: Container = Depends(get_container)):
-    loaded = container.models_loaded
-    return ReadyResponse(status="ready" if loaded else "not_ready", models_loaded=loaded)
+    readiness_info = container.readiness
+    return ReadyResponse(
+        status=readiness_info["status"],
+        models_loaded=bool(readiness_info["models_loaded"]),
+        asset_error=readiness_info["asset_error"],
+    )

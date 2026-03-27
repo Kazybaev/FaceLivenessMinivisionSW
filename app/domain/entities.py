@@ -5,7 +5,12 @@ from collections import deque
 
 import numpy as np
 
-from app.domain.enums import LivenessVerdict, DetectionMethod
+from app.domain.enums import (
+    ControllerVerdict,
+    DetectionMethod,
+    LivenessVerdict,
+    TurnstileState,
+)
 
 
 @dataclass
@@ -86,3 +91,31 @@ class ModelInfo:
     w_input: int
     model_type: str
     scale: float | None
+
+
+@dataclass
+class AssetManifest:
+    mediapipe_model_path: str
+    retinaface_prototxt: str
+    retinaface_caffemodel: str
+    anti_spoof_model_dir: str
+    anti_spoof_model_names: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TurnstileDecision:
+    session_id: str
+    state: TurnstileState
+    reason: str
+    confidence: float
+    reason_codes: list[str]
+    controller_verdict: ControllerVerdict | None = None
+    timestamp_utc: str = ""
+    latency_ms: float = 0.0
+    camera_id: str = ""
+    device_id: str = ""
+    live_score: float = 0.0
+    heuristic_score: float = 0.0
+    deep_learning_score: float | None = None
+    is_final: bool = False
+    details: dict = field(default_factory=dict)

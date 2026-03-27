@@ -1,13 +1,11 @@
-# Face Liveness Detection — Configuration
-# All hardcoded values from 5+ source files collected here.
-
 detector:
   retinaface:
     confidence_threshold: 0.6
-    input_size: 192  # resize shorter side
+    input_size: 192
     prototxt: "resources/detection_model/deploy.prototxt"
     caffemodel: "resources/detection_model/Widerface-RetinaFace.caffemodel"
   mediapipe:
+    model_path: "resources/face_landmarker.task"
     min_face_detection_confidence: 0.5
     min_face_presence_confidence: 0.5
     min_tracking_confidence: 0.5
@@ -15,34 +13,27 @@ detector:
 
 analyzer:
   heuristic:
-    # Blink detection
     blinks_needed: 3
     ear_threshold: 0.22
     min_blink_frames: 2
-    # Head movement
     moves_needed: 10
     move_pixels: 16
     move_max_jump: 35
     smooth_window: 6
-    # Nose/Eye ratio
     ratio_diff_min: 0.25
     ratio_checks_min: 6
-    # Skin texture
     texture_min: 90.0
     texture_frames: 20
-    # Landmark indices
     left_eye: [362, 385, 387, 263, 373, 380]
     right_eye: [33, 160, 158, 133, 153, 144]
     nose_tip: 1
     left_corner: 263
     right_corner: 33
-
   deep_learning:
     model_dir: "resources/anti_spoof_models"
     confidence_threshold: 0.6
     smoothing_frames: 10
     num_classes: 3
-
   combined:
     dl_weight: 0.6
     heuristic_weight: 0.4
@@ -67,9 +58,52 @@ training:
   cls_loss_weight: 0.5
   ft_loss_weight: 0.5
 
+camera:
+  id: "camera-0"
+  index: 0
+  width: 1280
+  height: 720
+
+turnstile:
+  device_id: "edge-device-001"
+  decision_window_ms: 1200
+  cooldown_ms: 1400
+  min_good_frames: 8
+  webhook_url: null
+  webhook_timeout_ms: 800
+  audit_log_dir: "logs/audit"
+  control_plane_enabled: true
+  control_plane_host: "127.0.0.1"
+  control_plane_port: 8000
+  thresholds:
+    min_face_ratio: 0.07
+    max_face_ratio: 0.60
+    min_brightness: 0.12
+    max_brightness: 0.96
+    min_blur_var: 22.0
+    texture_real_min: 0.30
+    flow_rigidity_spoof: 0.94
+    parallax_live_min: 0.004
+    motion_min: 0.45
+    motion_max: 14.0
+    edge_screen_high: 240.0
+    flicker_min_hz: 7.0
+    flicker_max_hz: 35.0
+    flicker_amp_spoof: 0.010
+    glare_ratio: 0.13
+    live_score_threshold: 0.62
+    spoof_score_threshold: 0.42
+    dl_fake_override_threshold: 0.82
+    dl_real_min_threshold: 0.68
+    heuristic_weight: 0.55
+    deep_learning_weight: 0.45
+    dl_interval_frames: 3
+
 api:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 8000
   workers: 1
-  cors_origins: ["*"]
-  max_upload_size: 10485760  # 10MB
+  cors_origins:
+    - "http://127.0.0.1"
+    - "http://localhost"
+  max_upload_size: 10485760

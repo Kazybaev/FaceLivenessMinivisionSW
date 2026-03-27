@@ -1,18 +1,16 @@
 # -*- coding: utf-8 -*-
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║          LIVENESS DETECTION  v4.0  —  Anti-Spoofing Edition             ║
+# ║          LIVENESS DETECTION  v3.0  —  Professional Edition              ║
 # ║                                                                          ║
 # ║  Checks:  1. Adaptive blink (personal EAR baseline)                     ║
-# ║           2. Head movement                                               ║
-# ║           3. Nose/eye depth-ratio                                        ║
-# ║           4. LBP skin-texture                                            ║
-# ║           5. Micro-motion frequency                                      ║
-# ║           6. Facial expression dynamics                                  ║
-# ║           7. Moiré / screen flicker detection  ← NEW                    ║
-# ║           8. Edge sharpness (screen vs skin)   ← NEW                    ║
-# ║           9. Challenge-response (blink/turn)   ← NEW                    ║
+# ║           2. 3D head pose via Z-landmarks                                ║
+# ║           3. Micro-motion frequency (natural body oscillation)           ║
+# ║           4. Independent L/R eye analysis                                ║
+# ║           5. LBP skin-texture (Local Binary Pattern)                     ║
+# ║           6. Facial expression dynamics (brow / lip movement)            ║
+# ║           7. Nose/eye depth-ratio                                         ║
 # ║                                                                          ║
-# ║  Build:   2026-03-25                                                     ║
+# ║  Build:   2026-03-24                                                     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 import cv2
@@ -20,7 +18,6 @@ import numpy as np
 import mediapipe as mp
 import urllib.request
 import os
-import random
 from collections import deque
 import time
 from datetime import datetime
@@ -39,17 +36,18 @@ logging.basicConfig(
 )
 log = logging.getLogger("liveness")
 
-VERSION    = "4.0"
-BUILD_DATE = "2026-03-25"
+# ─── VERSION ───────────────────────────────────────────────────────────────
+VERSION    = "3.0"
+BUILD_DATE = "2026-03-24"
 
 # ─── THRESHOLDS ────────────────────────────────────────────────────────────
-REAL_THRESHOLD      = 80.0
-RESET_INTERVAL_SEC  = 5
+REAL_THRESHOLD      = 70.0      # % to declare REAL
+RESET_INTERVAL_SEC  = 8         # auto-reset window
 
 # Blink
 BLINKS_NEEDED       = 3
-EAR_CLOSED_RATIO    = 0.78
-EAR_BASELINE_FRAMES = 40
+EAR_CLOSED_RATIO    = 0.78      # fraction of personal baseline → "closed"
+EAR_BASELINE_FRAMES = 40        # frames to compute personal baseline
 BLINK_MIN_FRAMES    = 2
 BLINK_MAX_FRAMES    = 10
 
@@ -64,56 +62,26 @@ RATIO_DIFF_MIN      = 0.22
 RATIO_CHECKS_MIN    = 5
 
 # Texture (LBP)
-TEXTURE_MIN_LBP     = 0.65
+TEXTURE_MIN_LBP     = 0.65      # entropy of LBP histogram  (0..1)
 TEXTURE_FRAMES      = 25
 
 # Micro-motion frequency
-FREQ_BUFFER_LEN     = 90
-FREQ_MIN_HZ         = 0.5
-FREQ_MAX_HZ         = 4.0
+FREQ_BUFFER_LEN     = 90        # ~3 s at 30 fps
+FREQ_MIN_HZ         = 0.5       # natural sway lower bound
+FREQ_MAX_HZ         = 4.0       # natural sway upper bound
 FREQ_CHECKS_MIN     = 4
 
 # Expression dynamics
-EXPR_MOVE_THRESH    = 3.5
+EXPR_MOVE_THRESH    = 3.5       # pixels of brow/lip movement to count
 EXPR_CHECKS_MIN     = 3
 
-# ── NEW: Moiré / flicker ───────────────────────────────────────────────────
-# Экран телефона мерцает на 50–120 Hz. Камера фиксирует это как
-# периодические пульсации яркости в диапазоне 8-30 Hz после подвыборки.
-FLICKER_BUFFER_LEN  = 60        # кадров (~2 с)
-FLICKER_MIN_HZ      = 8.0       # нижняя граница частоты мерцания экрана
-FLICKER_MAX_HZ      = 30.0      # верхняя граница
-FLICKER_AMP_THRESH  = 0.012     # порог амплитуды (0..1 от макс. яркости)
-# Если флікер ОБНАРУЖЕН → это экран → штраф
-FLICKER_PENALTY     = 40.0      # очков вычитается из итогового скора
-
-# ── NEW: Edge sharpness ────────────────────────────────────────────────────
-# Граница экрана телефона — идеально прямая и резкая.
-# Живое лицо даёт мягкие, неравномерные края.
-EDGE_FRAMES         = 20
-EDGE_SHARP_THRESH   = 0.55      # если > порога → слишком резкий → экран
-# Если слишком резко → штраф
-EDGE_PENALTY        = 25.0
-
-# ── NEW: Challenge-response ────────────────────────────────────────────────
-CHALLENGE_INTERVAL  = 6.0       # секунд между заданиями
-CHALLENGE_TIMEOUT   = 5.0       # секунд на выполнение задания
-CHALLENGE_BONUS     = 30.0      # очков за успешное выполнение
-CHALLENGE_TYPES     = ["BLINK", "TURN_LEFT", "TURN_RIGHT"]
-
-# Head turn thresholds (nose X relative to eye midpoint, normalised)
-TURN_LEFT_THRESH    = -0.12     # нос сдвинут влево
-TURN_RIGHT_THRESH   = +0.12     # нос сдвинут вправо
-
-# Scoring weights (должны в сумме давать 1.0)
-W_BLINK    = 0.15
-W_MOVE     = 0.13
-W_RATIO    = 0.08
-W_TEXTURE  = 0.16
-W_FREQ     = 0.12
-W_EXPR     = 0.11
-W_FLICKER  = 0.13   # вес "нет мерцания"
-W_EDGE     = 0.12   # вес "мягкие края"
+# Scoring weights  (must sum to 1.0)
+W_BLINK    = 0.20
+W_MOVE     = 0.18
+W_RATIO    = 0.12
+W_TEXTURE  = 0.20
+W_FREQ     = 0.15
+W_EXPR     = 0.15
 
 # ─── LANDMARK INDICES ──────────────────────────────────────────────────────
 LEFT_EYE   = [362, 385, 387, 263, 373, 380]
@@ -172,31 +140,14 @@ def lbp_entropy(roi_gray: np.ndarray) -> float:
     return float(np.clip(entropy, 0, 1))
 
 
-def dominant_frequency(signal: np.ndarray, fps: float = 30.0):
-    """Возвращает (dominant_hz, amplitude_ratio)."""
+def dominant_frequency(signal: np.ndarray, fps: float = 30.0) -> float:
     if len(signal) < 16:
-        return 0.0, 0.0
-    sig = signal - np.mean(signal)
-    fft_vals = np.abs(np.fft.rfft(sig))
-    freqs    = np.fft.rfftfreq(len(signal), d=1.0 / fps)
-    idx      = np.argmax(fft_vals[1:]) + 1
-    amp      = fft_vals[idx] / (len(signal) / 2.0 + 1e-9)
-    return float(freqs[idx]), float(amp)
-
-
-def edge_sharpness_score(face_roi_gray: np.ndarray) -> float:
-    """
-    Возвращает нормализованную «резкость» границ в ROI.
-    Экран телефона → высокая резкость (близко к 1.0).
-    Живая кожа → низкая резкость (ближе к 0.0).
-    """
-    if face_roi_gray.size < 400:
         return 0.0
-    lap = cv2.Laplacian(face_roi_gray, cv2.CV_64F)
-    variance = lap.var()
-    # Нормализуем: реальное лицо ~50-300, экран ~600-3000+
-    score = float(np.clip(variance / 1500.0, 0.0, 1.0))
-    return score
+    sig = signal - np.mean(signal)
+    fft = np.abs(np.fft.rfft(sig))
+    freqs = np.fft.rfftfreq(len(signal), d=1.0 / fps)
+    idx = np.argmax(fft[1:]) + 1
+    return float(freqs[idx])
 
 
 def draw_bar(img, x, y, ratio, color, width=240, height=10):
@@ -212,86 +163,19 @@ def make_color(pct: float):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# CHALLENGE STATE
-# ═══════════════════════════════════════════════════════════════════════════
-
-class ChallengeManager:
-    def __init__(self):
-        self.current    = None      # текущее задание ("BLINK" / "TURN_LEFT" / "TURN_RIGHT")
-        self.issued_at  = 0.0
-        self.bonus      = 0.0       # накопленный бонус
-        self.completed  = 0
-        self.failed     = 0
-        self._next_at   = time.time() + 3.0   # первое задание через 3 сек
-
-    def tick(self, now: float, baseline_done: bool) -> None:
-        """Вызывать каждый кадр. Выдаёт новое задание если пришло время."""
-        if not baseline_done:
-            return
-        if self.current is None and now >= self._next_at:
-            self.current   = random.choice(CHALLENGE_TYPES)
-            self.issued_at = now
-            log.info(f"[CHALLENGE] → {self.current}")
-
-    def check(self, now: float, did_blink: bool,
-              nose_offset: float) -> str:
-        """
-        Проверяет выполнение текущего задания.
-        nose_offset = (nose_x - eye_mid_x) / face_width  → + вправо, - влево
-        Возвращает: "ok" | "fail" | "waiting" | "none"
-        """
-        if self.current is None:
-            return "none"
-
-        elapsed = now - self.issued_at
-        success = False
-
-        if self.current == "BLINK" and did_blink:
-            success = True
-        elif self.current == "TURN_LEFT" and nose_offset < TURN_LEFT_THRESH:
-            success = True
-        elif self.current == "TURN_RIGHT" and nose_offset > TURN_RIGHT_THRESH:
-            success = True
-
-        if success:
-            self.bonus    += CHALLENGE_BONUS
-            self.completed += 1
-            log.info(f"[CHALLENGE] ✓ {self.current} completed  bonus={self.bonus:.0f}")
-            self.current   = None
-            self._next_at  = now + CHALLENGE_INTERVAL
-            return "ok"
-
-        if elapsed > CHALLENGE_TIMEOUT:
-            self.failed   += 1
-            log.info(f"[CHALLENGE] ✗ {self.current} FAILED")
-            self.current   = None
-            self._next_at  = now + CHALLENGE_INTERVAL
-            return "fail"
-
-        return "waiting"
-
-    def reset(self):
-        self.current   = None
-        self._next_at  = time.time() + 2.0
-        # бонус и счётчики НЕ сбрасываем — они накапливаются за сессию
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 # STATE
 # ═══════════════════════════════════════════════════════════════════════════
 
 def reset_state(ear_baseline: float = 0.0):
     return {
-        "blink_count":      0,
-        "blink_frames":     0,
-        "ear_baseline":     ear_baseline,
-        "move_count":       0,
-        "ratio_ok_count":   0,
-        "freq_ok_count":    0,
-        "expr_ok_count":    0,
-        "flicker_ok":       True,   # True = нет мерцания = хорошо
-        "edge_ok":          True,   # True = мягкие края = хорошо
-        "last_reset":       time.time(),
+        "blink_count":    0,
+        "blink_frames":   0,
+        "ear_baseline":   ear_baseline,
+        "move_count":     0,
+        "ratio_ok_count": 0,
+        "freq_ok_count":  0,
+        "expr_ok_count":  0,
+        "last_reset":     time.time(),
     }
 
 
@@ -299,47 +183,25 @@ def reset_state(ear_baseline: float = 0.0):
 # SCORE
 # ═══════════════════════════════════════════════════════════════════════════
 
-def compute_score(state: dict, texture_pct: float,
-                  challenge_bonus: float, challenge_fails: int) -> dict:
-    b  = min(1.0, state["blink_count"]    / BLINKS_NEEDED)
-    m  = min(1.0, state["move_count"]     / MOVES_NEEDED)
-    r  = min(1.0, state["ratio_ok_count"] / RATIO_CHECKS_MIN)
-    t  = texture_pct / 100.0
-    f  = min(1.0, state["freq_ok_count"]  / FREQ_CHECKS_MIN)
-    e  = min(1.0, state["expr_ok_count"]  / EXPR_CHECKS_MIN)
-    fl = 1.0 if state["flicker_ok"] else 0.0   # нет мерцания = 1
-    ed = 1.0 if state["edge_ok"]    else 0.0   # мягкие края  = 1
+def compute_score(state: dict, texture_pct: float) -> dict:
+    b = min(1.0, state["blink_count"]    / BLINKS_NEEDED)
+    m = min(1.0, state["move_count"]     / MOVES_NEEDED)
+    r = min(1.0, state["ratio_ok_count"] / RATIO_CHECKS_MIN)
+    t = texture_pct / 100.0
+    f = min(1.0, state["freq_ok_count"]  / FREQ_CHECKS_MIN)
+    e = min(1.0, state["expr_ok_count"]  / EXPR_CHECKS_MIN)
 
-    base = (b*W_BLINK + m*W_MOVE + r*W_RATIO + t*W_TEXTURE +
-            f*W_FREQ  + e*W_EXPR + fl*W_FLICKER + ed*W_EDGE) * 100.0
-
-    # Штрафы за мерцание и резкие края
-    penalty = 0.0
-    if not state["flicker_ok"]:
-        penalty += FLICKER_PENALTY
-    if not state["edge_ok"]:
-        penalty += EDGE_PENALTY
-
-    # Бонус за challenge (ограничен 30 очками чтобы не переполнять)
-    bonus = min(challenge_bonus, 30.0)
-
-    # Штраф за провал challenge
-    fail_penalty = min(challenge_fails * 10.0, 20.0)
-
-    total = float(np.clip(base - penalty + bonus - fail_penalty, 0.0, 100.0))
+    score = (b*W_BLINK + m*W_MOVE + r*W_RATIO + t*W_TEXTURE +
+             f*W_FREQ  + e*W_EXPR) * 100.0
 
     return {
-        "blink_pct":   b  * 100,
-        "move_pct":    m  * 100,
-        "ratio_pct":   r  * 100,
-        "texture_pct": t  * 100,
-        "freq_pct":    f  * 100,
-        "expr_pct":    e  * 100,
-        "flicker_pct": fl * 100,
-        "edge_pct":    ed * 100,
-        "penalty":     penalty,
-        "bonus":       bonus,
-        "total":       total,
+        "blink_pct":   b * 100,
+        "move_pct":    m * 100,
+        "ratio_pct":   r * 100,
+        "texture_pct": t * 100,
+        "freq_pct":    f * 100,
+        "expr_pct":    e * 100,
+        "total":       score,
     }
 
 
@@ -353,15 +215,18 @@ def main():
     banner = f"""
 ╔══════════════════════════════════════════════════════════════════════╗
 ║                                                                      ║
-║          LIVENESS DETECTION  v{VERSION}  —  Anti-Spoofing Edition        ║
+║          LIVENESS DETECTION  v{VERSION}  —  Professional Edition         ║
 ║          Build: {BUILD_DATE}   Started: {session_start:%H:%M:%S}              ║
 ║                                                                      ║
-║  NEW:  Moiré/flicker · Edge sharpness · Challenge-response          ║
+║  Checks:   Adaptive blink · 3D head pose · Micro-motion freq        ║
+║            LBP skin texture · L/R eye · Depth ratio · Expression    ║
+║                                                                      ║
 ║  REAL threshold: {REAL_THRESHOLD}%    Auto-reset every {RESET_INTERVAL_SEC}s                      ║
 ║  Controls:  Q = quit   R = manual reset                              ║
 ╚══════════════════════════════════════════════════════════════════════╝"""
     print(banner)
     log.info("Loading face landmark model …")
+
     landmarker = get_landmarker()
     log.info("Model ready.")
 
@@ -376,37 +241,30 @@ def main():
         cap = None
 
     if cap is None or not cap.isOpened():
-        log.error("No camera found.")
+        log.error("No camera found. Connect a camera and try again.")
         sys.exit(1)
 
     fps_target = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
     # ── Buffers ───────────────────────────────────────────────────────
-    ear_buf      = deque(maxlen=EAR_BASELINE_FRAMES)
-    nose_buf     = deque(maxlen=SMOOTH_WINDOW)
-    leye_buf     = deque(maxlen=SMOOTH_WINDOW)
-    reye_buf     = deque(maxlen=SMOOTH_WINDOW)
-    texture_buf  = deque(maxlen=TEXTURE_FRAMES)
-    freq_buf     = deque(maxlen=FREQ_BUFFER_LEN)
-    brow_buf     = deque(maxlen=SMOOTH_WINDOW)
-    lip_buf      = deque(maxlen=SMOOTH_WINDOW)
-    flicker_buf  = deque(maxlen=FLICKER_BUFFER_LEN)   # средняя яркость кадра
-    edge_buf     = deque(maxlen=EDGE_FRAMES)
+    ear_buf     = deque(maxlen=EAR_BASELINE_FRAMES)
+    nose_buf    = deque(maxlen=SMOOTH_WINDOW)
+    leye_buf    = deque(maxlen=SMOOTH_WINDOW)
+    reye_buf    = deque(maxlen=SMOOTH_WINDOW)
+    texture_buf = deque(maxlen=TEXTURE_FRAMES)
+    freq_buf    = deque(maxlen=FREQ_BUFFER_LEN)
+    brow_buf    = deque(maxlen=SMOOTH_WINDOW)
+    lip_buf     = deque(maxlen=SMOOTH_WINDOW)
 
     state        = reset_state()
     ear_baseline = 0.0
     baseline_done = False
     baseline_buf  = deque(maxlen=EAR_BASELINE_FRAMES)
 
-    challenge    = ChallengeManager()
-
-    frame_count  = 0
-    reset_count  = 0
-    fps_buf      = deque(maxlen=30)
-    t_prev       = time.time()
-
-    # Для отслеживания новых морганий в текущем кадре
-    blinked_this_frame = False
+    frame_count = 0
+    reset_count = 0
+    fps_buf     = deque(maxlen=30)
+    t_prev      = time.time()
 
     log.info("Detection running …  press Q to quit.")
 
@@ -426,30 +284,23 @@ def main():
 
         h, w    = frame.shape[:2]
         display = frame.copy()
-        gray    = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-        # ── Flicker: средняя яркость всего кадра ─────────────────────
-        flicker_buf.append(float(gray.mean()) / 255.0)
 
         # ── Auto-reset ────────────────────────────────────────────────
         elapsed = now - state["last_reset"]
         if elapsed >= RESET_INTERVAL_SEC:
             reset_count += 1
-            log.info(f"[RESET #{reset_count}]  baseline={ear_baseline:.3f}")
+            log.info(f"[RESET #{reset_count}]  window={elapsed:.1f}s  baseline={ear_baseline:.3f}")
             state = reset_state(ear_baseline=ear_baseline)
-            texture_buf.clear(); nose_buf.clear(); leye_buf.clear()
-            reye_buf.clear(); freq_buf.clear(); brow_buf.clear()
-            lip_buf.clear(); edge_buf.clear()
-            challenge.reset()
+            texture_buf.clear()
+            nose_buf.clear(); leye_buf.clear(); reye_buf.clear()
+            freq_buf.clear(); brow_buf.clear(); lip_buf.clear()
 
         # ── Detect ────────────────────────────────────────────────────
         rgb    = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         result = landmarker.detect(mp_img)
         face_found = bool(result.face_landmarks)
-
-        blinked_this_frame = False
-        nose_offset        = 0.0    # для challenge turn-detection
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         if face_found:
             lm = result.face_landmarks[0]
@@ -471,7 +322,7 @@ def main():
                     ear_baseline = float(np.percentile(baseline_buf, 75))
                     baseline_done = True
                     state["ear_baseline"] = ear_baseline
-                    log.info(f"EAR baseline: {ear_baseline:.3f}")
+                    log.info(f"EAR baseline calibrated: {ear_baseline:.3f}")
             else:
                 ear_threshold = ear_baseline * EAR_CLOSED_RATIO
                 if ear < ear_threshold:
@@ -479,8 +330,8 @@ def main():
                 else:
                     if BLINK_MIN_FRAMES <= state["blink_frames"] <= BLINK_MAX_FRAMES:
                         state["blink_count"] += 1
-                        blinked_this_frame = True
-                        log.info(f"  Blink {state['blink_count']}/{BLINKS_NEEDED}")
+                        log.info(f"  Blink {state['blink_count']}/{BLINKS_NEEDED}  "
+                                 f"(EAR={ear:.3f} < thr={ear_threshold:.3f})")
                     state["blink_frames"] = 0
 
             # ── 2. Head movement ──────────────────────────────────────
@@ -491,11 +342,6 @@ def main():
             leye_buf.append(lcor_raw)
             reye_buf.append(rcor_raw)
             freq_buf.append(nose_raw[0])
-
-            # Нос относительно середины глаз (для challenge)
-            eye_mid_x    = (lcor_raw[0] + rcor_raw[0]) / 2.0
-            face_width   = abs(lcor_raw[0] - rcor_raw[0]) + 1e-6
-            nose_offset  = (nose_raw[0] - eye_mid_x) / face_width
 
             if len(nose_buf) == SMOOTH_WINDOW:
                 s_nose = np.mean(nose_buf, axis=0)
@@ -510,6 +356,7 @@ def main():
                 if MOVE_PIXELS_MIN < nose_dist < MOVE_PIXELS_MAX:
                     state["move_count"] += 1
 
+                # ── 3. Depth ratio ────────────────────────────────────
                 if eye_dist > 2.0:
                     ratio = nose_dist / (eye_dist + 1e-6)
                     if abs(ratio - 1.0) > RATIO_DIFF_MIN:
@@ -517,7 +364,7 @@ def main():
 
             # ── 4. Micro-motion frequency ─────────────────────────────
             if len(freq_buf) == FREQ_BUFFER_LEN:
-                dom_hz, _ = dominant_frequency(np.array(freq_buf), fps=live_fps)
+                dom_hz = dominant_frequency(np.array(freq_buf), fps=live_fps)
                 if FREQ_MIN_HZ < dom_hz < FREQ_MAX_HZ:
                     state["freq_ok_count"] += 1
 
@@ -529,14 +376,13 @@ def main():
             face_roi = gray[fy1:fy2, fx1:fx2]
             if face_roi.size > 200:
                 texture_buf.append(lbp_entropy(face_roi))
-                # ── 8. Edge sharpness ─────────────────────────────────
-                edge_buf.append(edge_sharpness_score(face_roi))
 
             # ── 6. Expression dynamics ────────────────────────────────
             brow_pts = np.mean([pt2(i) for i in L_BROW + R_BROW], axis=0)
             lip_pts  = np.mean([pt2(i) for i in UPPER_LIP + LOWER_LIP], axis=0)
             brow_buf.append(brow_pts)
             lip_buf.append(lip_pts)
+
             if len(brow_buf) == SMOOTH_WINDOW:
                 brow_move = float(np.linalg.norm(np.mean(brow_buf, axis=0) - brow_buf[0]))
                 lip_move  = float(np.linalg.norm(np.mean(lip_buf,  axis=0) - lip_buf[0]))
@@ -548,33 +394,10 @@ def main():
                 cv2.circle(display, (int(lm[idx].x * w), int(lm[idx].y * h)), 2, (0, 210, 180), -1)
             cv2.circle(display, (int(lm[NOSE_TIP].x * w), int(lm[NOSE_TIP].y * h)), 4, (255, 200, 0), -1)
 
-        # ── 7. Moiré / Flicker detection ─────────────────────────────
-        if len(flicker_buf) == FLICKER_BUFFER_LEN:
-            _, flicker_amp = dominant_frequency(np.array(flicker_buf), fps=live_fps)
-            # Проверяем именно диапазон мерцания экрана
-            flicker_hz, flicker_amp = dominant_frequency(np.array(flicker_buf), fps=live_fps)
-            if FLICKER_MIN_HZ < flicker_hz < FLICKER_MAX_HZ and flicker_amp > FLICKER_AMP_THRESH:
-                state["flicker_ok"] = False   # мерцание обнаружено → скорее всего экран
-                log.warning(f"  [FLICKER] detected hz={flicker_hz:.1f} amp={flicker_amp:.4f}")
-            else:
-                state["flicker_ok"] = True
-
-        # ── Edge sharpness verdict ────────────────────────────────────
-        if edge_buf:
-            avg_edge = float(np.mean(edge_buf))
-            state["edge_ok"] = avg_edge < EDGE_SHARP_THRESH
-        else:
-            avg_edge = 0.0
-
-        # ── Challenge-response ────────────────────────────────────────
-        challenge.tick(now, baseline_done)
-        ch_result = challenge.check(now, blinked_this_frame, nose_offset)
-
         # ── Compute final score ───────────────────────────────────────
         avg_texture = float(np.mean(texture_buf)) if texture_buf else 0.0
         texture_pct = min(100.0, avg_texture / TEXTURE_MIN_LBP * 100.0)
-        scores      = compute_score(state, texture_pct,
-                                    challenge.bonus, challenge.failed)
+        scores      = compute_score(state, texture_pct)
         final       = scores["total"]
 
         # ── Verdict ───────────────────────────────────────────────────
@@ -588,74 +411,39 @@ def main():
             verdict = "REAL PERSON"
             vcolor  = (0, 220, 0)
         else:
-            verdict = "FAKE / SPOOF"
+            verdict = "FAKE / PHOTO"
             vcolor  = (30, 30, 220)
 
         # ═════════════════════════════════════════════════════════════
         # UI RENDERING
         # ═════════════════════════════════════════════════════════════
-        PANEL_W = 340
+        PANEL_W = 320
         px0     = w - PANEL_W
 
-        # Top bar
         cv2.rectangle(display, (0, 0), (w, 60), (8, 8, 12), -1)
         cv2.putText(display, f"LIVENESS v{VERSION}  |  {verdict}",
-                    (14, 42), cv2.FONT_HERSHEY_SIMPLEX, 1.05, vcolor, 2, cv2.LINE_AA)
+                    (14, 42), cv2.FONT_HERSHEY_SIMPLEX, 1.1, vcolor, 2, cv2.LINE_AA)
         cv2.putText(display, f"{live_fps:.0f} fps",
                     (px0 - 80, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (90, 90, 100), 1, cv2.LINE_AA)
 
-        # ── CHALLENGE OVERLAY ─────────────────────────────────────────
-        if challenge.current is not None:
-            time_left_ch = max(0.0, CHALLENGE_TIMEOUT - (now - challenge.issued_at))
-            labels = {
-                "BLINK":       "BLINK NOW!",
-                "TURN_LEFT":   "TURN LEFT",
-                "TURN_RIGHT":  "TURN RIGHT",
-            }
-            ch_text = labels.get(challenge.current, challenge.current)
-            # Большой текст по центру
-            (tw, th), _ = cv2.getTextSize(ch_text, cv2.FONT_HERSHEY_SIMPLEX, 1.6, 3)
-            cx = (px0 - tw) // 2
-            cy = h // 2 + th // 2
-            # Тень
-            cv2.putText(display, ch_text, (cx + 2, cy + 2),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.6, (0, 0, 0), 4, cv2.LINE_AA)
-            # Цвет: жёлтый → красный в зависимости от оставшегося времени
-            ratio_left = time_left_ch / CHALLENGE_TIMEOUT
-            ch_col = (0, int(220 * ratio_left), int(220 * (1 - ratio_left)))
-            cv2.putText(display, ch_text, (cx, cy),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.6, ch_col, 3, cv2.LINE_AA)
-            # Таймер под текстом
-            cv2.putText(display, f"{time_left_ch:.1f}s",
-                        (cx + tw // 2 - 20, cy + 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, ch_col, 2, cv2.LINE_AA)
-
-        elif ch_result == "ok":
-            cv2.putText(display, "✓ DONE!", (px0 // 2 - 60, h // 2),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 230, 0), 3, cv2.LINE_AA)
-        elif ch_result == "fail":
-            cv2.putText(display, "✗ FAILED", (px0 // 2 - 70, h // 2),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.4, (30, 30, 220), 3, cv2.LINE_AA)
-
-        # Right panel
         overlay = display.copy()
         cv2.rectangle(overlay, (px0, 60), (w, h), (10, 12, 18), -1)
         cv2.addWeighted(overlay, 0.88, display, 0.12, 0, display)
 
-        def txt(text, y, color=(190, 190, 200), scale=0.46, bold=False):
+        def txt(text, y, color=(190, 190, 200), scale=0.48, bold=False):
             cv2.putText(display, text, (px0 + 14, y), cv2.FONT_HERSHEY_SIMPLEX,
                         scale, color, 2 if bold else 1, cv2.LINE_AA)
 
         def sep(y):
             cv2.line(display, (px0 + 10, y), (w - 10, y), (40, 40, 55), 1)
 
-        txt("LIVENESS CHECKS", 86, (140, 140, 210), 0.50, bold=True)
-        sep(94)
+        txt("LIVENESS CHECKS", 88, (140, 140, 210), 0.52, bold=True)
+        sep(96)
 
         time_left = max(0.0, RESET_INTERVAL_SEC - (now - state["last_reset"]))
         tcol = (0, 190, 190) if time_left > 1.5 else (220, 110, 20)
-        txt(f"Window: {time_left:.1f}s / {RESET_INTERVAL_SEC}s   Resets: #{reset_count}", 112, tcol, 0.38)
-        sep(120)
+        txt(f"Window: {time_left:.1f}s / {RESET_INTERVAL_SEC}s   Resets: #{reset_count}", 116, tcol, 0.40)
+        sep(124)
 
         BAR_W  = PANEL_W - 28
         checks = [
@@ -665,60 +453,41 @@ def main():
             ("4. Texture",    scores["texture_pct"], f"{avg_texture:.2f}"),
             ("5. Freq",       scores["freq_pct"],    f"{state['freq_ok_count']}/{FREQ_CHECKS_MIN}"),
             ("6. Expression", scores["expr_pct"],    f"{state['expr_ok_count']}/{EXPR_CHECKS_MIN}"),
-            ("7. No Flicker", scores["flicker_pct"], "OK" if state["flicker_ok"] else "SCREEN!"),
-            ("8. Edge Soft",  scores["edge_pct"],    f"{avg_edge:.2f}"),
         ]
-        y = 142
+        y = 148
         for label, pct, detail in checks:
-            # Красный цвет для детекции экрана
-            if label in ("7. No Flicker", "8. Edge Soft") and pct < 100:
-                col = (40, 40, 220)
-            else:
-                col = make_color(pct)
-            txt(f"{label}: {detail}  ({pct:.0f}%)", y, col, 0.42)
-            draw_bar(display, px0 + 14, y + 4, pct / 100.0, col, width=BAR_W, height=8)
-            y += 32
-            sep(y - 3)
+            col = make_color(pct)
+            txt(f"{label}: {detail}  ({pct:.0f}%)", y, col, 0.44)
+            draw_bar(display, px0 + 14, y + 4, pct / 100.0, col, width=BAR_W, height=9)
+            y += 36
+            sep(y - 4)
 
-        # Challenge stats
-        ch_col2 = (0, 200, 120) if challenge.completed > 0 else (120, 120, 120)
-        txt(f"9. Challenge: {challenge.completed} ok / {challenge.failed} fail"
-            f"  +{min(challenge.bonus, 30):.0f}pts", y, ch_col2, 0.42)
-        y += 28
-        sep(y)
-
-        # Penalty line
-        if scores["penalty"] > 0:
-            txt(f"Penalty: -{scores['penalty']:.0f}pts (screen detected!)", y + 10,
-                (60, 60, 220), 0.40)
-            y += 22
- 
-        # Big score
-        txt("LIVENESS SCORE", y + 10, (160, 160, 160), 0.46)
+        txt("LIVENESS SCORE", y + 8, (160, 160, 160), 0.48)
         if final >= REAL_THRESHOLD:
             sc = (0, 240, 0)
         elif final >= REAL_THRESHOLD - 20:
             sc = (0, 200, 200)
         else:
             sc = (30, 30, 240)
-        cv2.putText(display, f"{final:.1f}%", (px0 + 14, y + 55),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.8, sc, 3, cv2.LINE_AA)
+        cv2.putText(display, f"{final:.1f}%", (px0 + 14, y + 58),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.9, sc, 3, cv2.LINE_AA)
 
-        sep(y + 65)
+        sep(y + 68)
 
         calib_pct = min(1.0, len(baseline_buf) / EAR_BASELINE_FRAMES)
         calib_col = (0, 200, 0) if baseline_done else (180, 180, 0)
         calib_txt = "EAR calibrated" if baseline_done else f"Calibrating {calib_pct*100:.0f}%"
-        txt(calib_txt, y + 82, calib_col, 0.38)
-        draw_bar(display, px0 + 14, y + 86, calib_pct, calib_col, width=BAR_W, height=5)
+        txt(calib_txt, y + 85, calib_col, 0.40)
+        draw_bar(display, px0 + 14, y + 89, calib_pct, calib_col, width=BAR_W, height=6)
 
-        sep(y + 95)
-        txt(f"Threshold: {REAL_THRESHOLD}%", y + 112, (130, 130, 140), 0.38)
-        txt(verdict, y + 132, vcolor, 0.58, bold=True)
+        sep(y + 100)
+
+        txt(f"Threshold: {REAL_THRESHOLD}%", y + 118, (130, 130, 140), 0.40)
+        txt(verdict, y + 140, vcolor, 0.60, bold=True)
 
         cv2.putText(display, f"v{VERSION}  {BUILD_DATE}",
-                    (10, h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.33, (60, 60, 70), 1, cv2.LINE_AA)
-        txt("Q quit   R reset", h - 12, (55, 55, 65), 0.32)
+                    (10, h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (60, 60, 70), 1, cv2.LINE_AA)
+        txt("Q quit   R reset", h - 14, (55, 55, 65), 0.34)
 
         cv2.imshow(f"Liveness Detection v{VERSION}", display)
         key = cv2.waitKey(1) & 0xFF
@@ -729,9 +498,7 @@ def main():
             reset_count += 1
             state = reset_state(ear_baseline=ear_baseline)
             texture_buf.clear(); nose_buf.clear(); leye_buf.clear()
-            reye_buf.clear(); freq_buf.clear(); brow_buf.clear()
-            lip_buf.clear(); edge_buf.clear()
-            challenge.reset()
+            reye_buf.clear(); freq_buf.clear(); brow_buf.clear(); lip_buf.clear()
             log.info(f"[MANUAL RESET #{reset_count}]")
 
     cap.release()

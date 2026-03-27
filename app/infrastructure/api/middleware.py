@@ -8,7 +8,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.domain.exceptions import FaceNotFoundError, InvalidImageError, ModelLoadError
+from app.domain.exceptions import (
+    AssetValidationError,
+    FaceNotFoundError,
+    InvalidImageError,
+    ModelLoadError,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -44,3 +49,7 @@ def setup_middleware(app: FastAPI, cors_origins: list[str]) -> None:
     @app.exception_handler(ModelLoadError)
     async def model_load_handler(request: Request, exc: ModelLoadError):
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    @app.exception_handler(AssetValidationError)
+    async def asset_validation_handler(request: Request, exc: AssetValidationError):
+        return JSONResponse(status_code=503, content={"detail": str(exc)})

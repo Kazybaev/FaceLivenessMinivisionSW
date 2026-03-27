@@ -8,3 +8,7 @@ class ModelLoadError(Exception):
 
 class InvalidImageError(Exception):
     pass
+
+
+class AssetValidationError(Exception):
+    pass

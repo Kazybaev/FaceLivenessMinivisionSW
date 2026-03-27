@@ -1,148 +1,184 @@
-# Face Liveness Detection
+# Access Control Anti-Spoofing MVP
 
-> Определяет — **живой человек** перед камерой или это **фото / экран / спуфинг** — в реальном времени, без облака, без платных API.
+Production-like MVP on Python for continuous camera processing, session-based anti-spoofing, suspicious object screening, and FastAPI status/control endpoints.
 
----
+## What this MVP does
 
-## Как это работает
+- Continuously reads frames from a camera in real time
+- Runs a session-based access check instead of a single-frame decision
+- Uses a YOLO-compatible object detector layer to watch for suspicious objects such as phone, tablet, monitor, laptop screen, or paper/photo sheet
+- Tracks one face across frames
+- Sends a short frame sequence to an anti-spoofing model interface
+- Allows handoff to face recognition only after anti-spoofing returns `real`
+- Denies access on `spoof` and `uncertain`
+- Blocks the whole session if a suspicious object appears even once during the session
+- Exposes current runtime status, current decision, events, and session reset through FastAPI
 
-Система проверяет **4 независимых признака**. Все 4 должны пройти, чтобы подтвердить живого человека:
+## Current implementation
 
-| # | Проверка | Почему работает |
-|---|----------|----------------|
-| 1 | **Моргание** (EAR — Eye Aspect Ratio) | Фото и экраны никогда не моргают |
-| 2 | **Движение головы** | Держащий фото двигает всю картинку как единый жёсткий объект |
-| 3 | **Соотношение движения носа и глаз** | При повороте живой головы нос смещается иначе, чем уголки глаз — на плоском фото всё движется синхронно |
-| 4 | **Текстура кожи** (Laplacian variance) | Живая кожа имеет поры и микротекстуру; печатные и экранные изображения слишком гладкие |
+- `app/core`, `app/services`, and `app/utils` contain the new MVP skeleton
+- Camera runs in a dedicated service thread
+- Pipeline runs in a separate background thread
+- YOLO detector is implemented as a pluggable service
+- Default YOLO backend is `mock`, so the project starts even without a real YOLO model
+- Anti-spoofing uses a temporal mock implementation that consumes a frame buffer
+- Face recognition is a stub gateway for future integration
 
----
+## File tree
 
-## Стек
-
-- **MiniFASNet** (minivision) — нейросеть anti-spoofing, ~98% точность, ~10 мс на CPU
-- **MediaPipe Face Mesh** — 478 landmarks лица в реальном времени
-- **OpenCV** — захват видео, детектор лиц (Caffe / RetinaFace), UI
-- **PyTorch** — инференс модели
-
----
-
-## Структура репозитория
-
-```
-FaceLivenessMinivisionSW/
-├── liveness_detection.py      # главный файл — запускать его
-├── test.py                    # тест на одном изображении
-├── train.py                   # дообучение модели
-├── face_landmarker.task       # модель MediaPipe (скачивается автоматически)
-├── req.txt                    # зависимости
-├── resources/
-│   ├── anti_spoof_models/     # веса MiniFASNet (.pth)
-│   └── detection_model/       # детектор лиц (Caffe)
-├── src/
-│   ├── model_lib/             # архитектуры MiniFASNet
-│   ├── data_io/               # трансформации
-│   └── utility.py             # вспомогательные функции
-├── datasets/                  # датасеты для обучения
-└── images/                    # тестовые изображения
-```
-
----
-
-## Быстрый старт
-
-### 1. Клонировать репозиторий
-
-```bash
-git clone https://github.com/Kazybaev/FaceLivenessMinivisionSW.git
-cd FaceLivenessMinivisionSW
+```text
+app/
+  api/
+    routes.py
+  core/
+    decision_engine.py
+    models.py
+    pipeline.py
+    schemas.py
+    session_manager.py
+  services/
+    anti_spoof_service.py
+    camera_service.py
+    event_logger.py
+    face_detector.py
+    face_tracker.py
+    recognition_gateway.py
+    yolo_detector.py
+  utils/
+    geometry.py
+    image_utils.py
+    timers.py
+  config.py
+  main.py
+tests/
+requirements.txt
+README.md
 ```
 
-### 2. Установить зависимости
+## Main runtime flow
 
-```bash
-pip install -r req.txt
+1. `CameraService` continuously reads frames.
+2. `AccessControlPipeline` pulls the latest frame in a loop.
+3. `YoloDetector` checks suspicious objects.
+4. `OpenCvHaarFaceDetector` finds faces.
+5. `FaceTracker` keeps one tracked face across frames.
+6. `SessionManager` maintains session state and frame buffer.
+7. `MockTemporalAntiSpoofModel` evaluates a short frame sequence.
+8. `DecisionEngine` decides `allow` or `deny`.
+9. `RecognitionGateway` receives the tracked face only on `allow`.
+
+## Session logic
+
+Session states include:
+
+- `idle`
+- `observing`
+- `suspicious_object_detected`
+- `spoof_detected`
+- `real_detected`
+- `blocked`
+- `cooldown`
+- `allowed`
+
+Rules:
+
+- If YOLO sees a suspicious object during the current session, the session is denied.
+- The same session cannot continue after that object disappears.
+- A new attempt is possible only after cooldown.
+- If anti-spoofing returns `uncertain`, access is denied.
+- YOLO is only an extra security layer. It never proves that a person is real.
+
+## FastAPI endpoints
+
+- `GET /health`
+- `GET /status`
+- `POST /session/reset`
+- `GET /events`
+- `GET /current-decision`
+- `GET /health/runtime`
+
+The legacy routes already present in the repository remain available too.
+
+## Local run
+
+### 1. Create and activate a virtual environment
+
+Windows PowerShell:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
 ```
 
-Или вручную:
+### 2. Install dependencies
 
-```bash
-pip install opencv-python mediapipe torch numpy
+```powershell
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-### 3. Запустить
+### 3. Start the API and continuous runtime
 
-```bash
-python liveness_detection.py
+```powershell
+python -m app.main
 ```
 
-При первом запуске файл `face_landmarker.task` (~2 МБ) скачается автоматически.
+Then open:
 
----
+- `http://127.0.0.1:8000/health`
+- `http://127.0.0.1:8000/status`
+- `http://127.0.0.1:8000/current-decision`
+- `http://127.0.0.1:8000/events`
 
-## Управление
+### 4. Start with a visible camera window
 
-| Клавиша | Действие |
-|---------|----------|
-| `Q` | Выход |
-| `R` | Сброс счётчиков (начать проверку заново) |
+If you want to see the camera feed on screen, run preview mode:
 
----
-
-## Что отображается на экране
-
-```
-┌─────────────────────────────────────────┐
-│  REAL PERSON          Score: 4/4        │
-├──────────────────┬──────────────────────┤
-│                  │  LIVENESS CHECK      │
-│   [камера]       │  1. Blinks:    3/3 ✓ │
-│                  │  2. Head move: 10/10✓ │
-│   • точки глаз   │  3. Face depth: 6/6 ✓│
-│   • точка носа   │  4. Skin texture: ✓  │
-│                  │                      │
-│                  │  RESULT: REAL PERSON │
-└──────────────────┴──────────────────────┘
+```powershell
+python -m app.main --preview
 ```
 
----
+You can also choose a different camera:
 
-## Настройка порогов
-
-Все параметры находятся в начале файла `liveness_detection.py`:
-
-```python
-BLINKS_NEEDED  = 3     # сколько морганий нужно
-MOVES_NEEDED   = 10    # сколько движений головы нужно
-EAR_THRESHOLD  = 0.22  # порог закрытого глаза (выше = чувствительнее)
-MOVE_PIXELS    = 16    # минимальный сдвиг носа в пикселях
-MOVE_MAX_JUMP  = 35    # максимальный сдвиг (больше = тряска камеры, игнорируется)
-TEXTURE_MIN    = 90.0  # порог текстуры кожи (выше = строже)
-RATIO_DIFF_MIN = 0.25  # минимальное различие движения носа и глаз
+```powershell
+python -m app.main --preview --camera 1
 ```
 
----
+Controls:
 
-## Известные ограничения
+- `Q` to quit
+- `R` to reset the current session
 
-| Атака | Статус |
-|-------|--------|
-| Фото (распечатка) | ✅ Блокируется |
-| Видео на экране телефона | ✅ Блокируется (нет независимого моргания) |
-| 3D-маска силиконовая | ⚠️ Частично (текстура) |
-| Deepfake / GAN | ❌ Не поддерживается — нужна отдельная модель |
+FastAPI stays available during preview unless you add `--no-api` to `python -m app.cli.access_preview`.
 
----
+## Config via environment
 
-## Модель MiniFASNet
+Examples:
 
-Проект использует [Silent Face Anti-Spoofing](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing) от Minivision.
+```powershell
+$env:ACCESS_CAMERA__INDEX="0"
+$env:ACCESS_YOLO__BACKEND="mock"
+$env:ACCESS_RUNTIME__AUTOSTART="true"
+python -m app.main
+```
 
-- Точность: ~98% на NUAA
-- Размер модели: ~600 КБ
-- Лицензия: Apache 2.0
+To switch to a real YOLO model later:
 
----
+```powershell
+$env:ACCESS_YOLO__BACKEND="ultralytics"
+$env:ACCESS_YOLO__MODEL_PATH="models\\yolov8n.pt"
+python -m app.main
+```
 
-## Лицензия
+## Tests
 
-Apache License 2.0 — см. файл [LICENSE](LICENSE)
+```powershell
+python -m pytest -q
+```
+
+## Notes
+
+- This is an MVP skeleton, not a finished high-security product.
+- The anti-spoofing module is intentionally replaceable.
+- The current face detector is lightweight and chosen to keep the MVP runnable out of the box.
+- For production hardening, replace the mock anti-spoof and mock YOLO path with real models and deployment-specific calibration.

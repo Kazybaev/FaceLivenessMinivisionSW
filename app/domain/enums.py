@@ -12,3 +12,17 @@ class DetectionMethod(str, Enum):
     HEURISTIC = "heuristic"
     DEEP_LEARNING = "deep_learning"
     COMBINED = "combined"
+
+
+class TurnstileState(str, Enum):
+    NO_FACE = "NO_FACE"
+    POSITIONING = "POSITIONING"
+    ANALYZING = "ANALYZING"
+    ACCESS_GRANTED = "ACCESS_GRANTED"
+    ACCESS_DENIED = "ACCESS_DENIED"
+    COOLDOWN = "COOLDOWN"
+
+
+class ControllerVerdict(str, Enum):
+    ACCESS_GRANTED = "ACCESS_GRANTED"
+    ACCESS_DENIED = "ACCESS_DENIED"

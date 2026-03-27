@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 from functools import lru_cache
+from pathlib import Path
 
 import yaml
 from pydantic import BaseModel
@@ -16,6 +16,7 @@ class RetinaFaceConfig(BaseModel):
 
 
 class MediaPipeConfig(BaseModel):
+    model_path: str = "resources/face_landmarker.task"
     min_face_detection_confidence: float = 0.5
     min_face_presence_confidence: float = 0.5
     min_tracking_confidence: float = 0.5
@@ -85,11 +86,57 @@ class TrainingConfig(BaseModel):
     ft_loss_weight: float = 0.5
 
 
+class CameraConfig(BaseModel):
+    id: str = "camera-0"
+    index: int = 0
+    width: int = 1280
+    height: int = 720
+
+
+class TurnstileThresholdsConfig(BaseModel):
+    min_face_ratio: float = 0.07
+    max_face_ratio: float = 0.60
+    min_brightness: float = 0.12
+    max_brightness: float = 0.96
+    min_blur_var: float = 22.0
+    texture_real_min: float = 0.30
+    flow_rigidity_spoof: float = 0.94
+    parallax_live_min: float = 0.004
+    motion_min: float = 0.45
+    motion_max: float = 14.0
+    edge_screen_high: float = 240.0
+    flicker_min_hz: float = 7.0
+    flicker_max_hz: float = 35.0
+    flicker_amp_spoof: float = 0.010
+    glare_ratio: float = 0.13
+    live_score_threshold: float = 0.62
+    spoof_score_threshold: float = 0.42
+    dl_fake_override_threshold: float = 0.82
+    dl_real_min_threshold: float = 0.68
+    heuristic_weight: float = 0.55
+    deep_learning_weight: float = 0.45
+    dl_interval_frames: int = 3
+
+
+class TurnstileConfig(BaseModel):
+    device_id: str = "edge-device-001"
+    decision_window_ms: int = 1200
+    cooldown_ms: int = 1400
+    min_good_frames: int = 8
+    webhook_url: str | None = None
+    webhook_timeout_ms: int = 800
+    audit_log_dir: str = "logs/audit"
+    control_plane_enabled: bool = True
+    control_plane_host: str = "127.0.0.1"
+    control_plane_port: int = 8000
+    thresholds: TurnstileThresholdsConfig = TurnstileThresholdsConfig()
+
+
 class ApiConfig(BaseModel):
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8000
     workers: int = 1
-    cors_origins: list[str] = ["*"]
+    cors_origins: list[str] = ["http://127.0.0.1", "http://localhost"]
     max_upload_size: int = 10_485_760
 
 
@@ -97,6 +144,8 @@ class AppSettings(BaseSettings):
     detector: DetectorConfig = DetectorConfig()
     analyzer: AnalyzerConfig = AnalyzerConfig()
     training: TrainingConfig = TrainingConfig()
+    camera: CameraConfig = CameraConfig()
+    turnstile: TurnstileConfig = TurnstileConfig()
     api: ApiConfig = ApiConfig()
 
     model_config = {"env_prefix": "LIVENESS_", "env_nested_delimiter": "__"}
@@ -118,6 +167,6 @@ def get_settings() -> AppSettings:
     config_path = root / "config" / "default.yaml"
     yaml_data: dict = {}
     if config_path.exists():
-        with open(config_path) as f:
-            yaml_data = yaml.safe_load(f) or {}
+        with open(config_path, encoding="utf-8") as file_obj:
+            yaml_data = yaml.safe_load(file_obj) or {}
     return AppSettings(**yaml_data)

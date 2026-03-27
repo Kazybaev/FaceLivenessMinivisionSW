@@ -1,0 +1,13 @@
+fastapi>=0.104
+uvicorn[standard]>=0.24
+python-multipart>=0.0.6
+pydantic>=2.5
+pydantic-settings>=2.1
+structlog>=23.2
+opencv-python>=4.8
+numpy>=1.26
+PyYAML>=6.0
+ultralytics>=8.2
+pytest>=7.4
+pytest-asyncio>=0.23
+httpx>=0.25
