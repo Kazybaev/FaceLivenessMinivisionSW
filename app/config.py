@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_YOLO_MODEL_CANDIDATES = (
+    _PROJECT_ROOT / "models" / "yolo26n.pt",
+    _PROJECT_ROOT / "models" / "yolo26s.pt",
+    _PROJECT_ROOT / "models" / "yolo26m.pt",
+    _PROJECT_ROOT / "models" / "yolo11n.pt",
+    _PROJECT_ROOT / "models" / "yolov8n.pt",
+)
 
 
 class ApiSettings(BaseModel):
@@ -74,11 +84,11 @@ class AntiSpoofSettings(BaseModel):
 class SessionSettings(BaseModel):
     session_timeout_seconds: float = 10.0
     suspicious_cooldown_seconds: float = 0.0
-    spoof_cooldown_seconds: float = 1.0
+    spoof_cooldown_seconds: float = 0.35
     sticky_suspicious_block: bool = False
     suspicious_hold_seconds: float = 0.12
     no_face_reset_seconds: float = 2.0
-    state_display_seconds: float = 0.15
+    state_display_seconds: float = 0.10
 
 
 class LoggingSettings(BaseModel):
@@ -109,6 +119,18 @@ class Settings(BaseSettings):
     session: SessionSettings = SessionSettings()
     logging: LoggingSettings = LoggingSettings()
     runtime: RuntimeSettings = RuntimeSettings()
+
+
+def enable_phone_detector(settings: Settings) -> Settings:
+    if settings.yolo.backend != "mock" and settings.yolo.model_path:
+        return settings
+
+    for candidate in _DEFAULT_YOLO_MODEL_CANDIDATES:
+        if candidate.exists():
+            settings.yolo.backend = "ultralytics"
+            settings.yolo.model_path = str(candidate)
+            return settings
+    return settings
 
 
 @lru_cache(maxsize=1)

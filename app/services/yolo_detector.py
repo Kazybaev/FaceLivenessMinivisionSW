@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -33,12 +34,14 @@ class YoloDetector:
         self._settings = settings
         self._detector: BaseDetector
         self.backend_name = settings.backend
+        self.model_name = "mock"
         self._call_counter = 0
         self._last_detections: list[ObjectDetection] = []
 
         if settings.backend != "ultralytics" or not settings.model_path:
             self._detector = MockYoloDetector()
             self.backend_name = self._detector.backend_name
+            self.model_name = self._detector.backend_name
             return
 
         try:
@@ -48,10 +51,12 @@ class YoloDetector:
             self._names = self._model.model.names
             self._detector = self
             self.backend_name = "ultralytics"
+            self.model_name = Path(settings.model_path).name
         except Exception as exc:  # pragma: no cover - depends on optional runtime.
             logger.warning("yolo_fallback_to_mock", error=str(exc))
             self._detector = MockYoloDetector()
             self.backend_name = self._detector.backend_name
+            self.model_name = self._detector.backend_name
 
     def detect(self, frame: np.ndarray) -> list[ObjectDetection]:
         if self._detector is not self:

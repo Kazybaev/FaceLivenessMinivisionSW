@@ -64,6 +64,7 @@ class StatusResponse(BaseModel):
     camera_running: bool
     camera_error: str | None = None
     yolo_backend: str
+    yolo_model: str
     anti_spoof_backend: str
     frame_counter: int
     session: SessionSnapshotSchema

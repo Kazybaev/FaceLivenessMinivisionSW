@@ -100,6 +100,7 @@ class AccessControlPipeline:
             "camera_running": bool(camera_status["running"]),
             "camera_error": camera_status["error"],
             "yolo_backend": self._yolo_detector.backend_name,
+            "yolo_model": self._yolo_detector.model_name,
             "anti_spoof_backend": self._settings.anti_spoof.backend,
             "frame_counter": int(camera_status["frame_counter"]),
             "session": session_snapshot,

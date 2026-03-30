@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from app.api.routes import router as access_router
 from app.config import Settings as AccessSettings
+from app.config import enable_phone_detector
 from app.config import get_settings as get_access_settings
 from app.core.pipeline import AccessControlPipeline
 from app.infrastructure.config import get_settings as get_legacy_settings
@@ -74,6 +75,7 @@ def run(argv: list[str] | None = None) -> None:
         return
 
     settings = get_access_settings().model_copy(deep=True)
+    settings = enable_phone_detector(settings)
     if args.camera is not None:
         settings.camera.index = args.camera
     if args.video is not None:

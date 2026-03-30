@@ -86,7 +86,7 @@ class TestAccessMvpDecisionEngine:
 
         assert decision is not None
         assert decision.verdict == DecisionVerdict.DENY
-        assert decision.reason == "Suspicious object detected: phone"
+        assert decision.reason == "Suspicious object detected: phone. Remove it and try again"
 
     def test_real_is_allowed_again_after_suspicious_flag_is_cleared(self):
         engine = DecisionEngine(SessionSettings(), AntiSpoofSettings(real_confidence_threshold=0.75))

@@ -8,7 +8,7 @@ import time
 import cv2
 import numpy as np
 
-from app.config import Settings, get_settings
+from app.config import Settings, enable_phone_detector, get_settings
 from app.core.pipeline import AccessControlPipeline
 from app.infrastructure.logging_setup import setup_logging
 from app.main import create_app
@@ -81,11 +81,11 @@ def _render_preview(frame: np.ndarray, snapshot: dict[str, object], status: dict
     anti_spoof = snapshot.get("anti_spoof_result") if isinstance(snapshot.get("anti_spoof_result"), dict) else None
     session_state = str(snapshot.get("session_state", "idle")).upper()
     if decision and decision.get("verdict") == "deny":
-        session_state = "FAKE"
+        session_state = "FAKE / RETRY"
     elif decision and decision.get("verdict") == "allow":
         session_state = "REAL"
     elif bool(snapshot.get("blocked_by_suspicious_object")):
-        session_state = "FAKE"
+        session_state = "FAKE / RETRY"
     blocked_reason = str(snapshot.get("blocked_reason") or "")
     suspicious_types = snapshot.get("suspicious_object_types", [])
     if isinstance(suspicious_types, list):
@@ -116,6 +116,15 @@ def _render_preview(frame: np.ndarray, snapshot: dict[str, object], status: dict
         display,
         f'YOLO: {str(status.get("yolo_backend", "unknown")).upper()}',
         470,
+        112,
+        (185, 185, 190),
+        0.50,
+        1,
+    )
+    _draw_text(
+        display,
+        f'MODEL: {str(status.get("yolo_model", "unknown"))}',
+        640,
         112,
         (185, 185, 190),
         0.50,
@@ -163,6 +172,7 @@ def main(argv: list[str] | None = None) -> None:
 
     setup_logging()
     settings = get_settings().model_copy(deep=True)
+    settings = enable_phone_detector(settings)
     if args.camera is not None:
         settings.camera.index = args.camera
     if args.video is not None:

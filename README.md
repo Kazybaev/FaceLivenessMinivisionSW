@@ -1,37 +1,112 @@
-# Access Control Anti-Spoofing MVP
+# Face Liveness and Access Control MVP
 
-Production-like MVP on Python for continuous camera processing, session-based anti-spoofing, suspicious object screening, and FastAPI status/control endpoints.
+Production-like MVP on Python for:
+- continuous camera or video processing
+- suspicious object detection before face recognition
+- anti-spoofing on a short frame sequence
+- visible preview window and FastAPI status endpoints
 
-## What this MVP does
+## What the project does now
 
-- Continuously reads frames from a camera in real time
-- Runs a session-based access check instead of a single-frame decision
-- Uses a YOLO-compatible object detector layer to watch for suspicious objects such as phone, tablet, monitor, laptop screen, or paper/photo sheet
-- Tracks one face across frames
-- Sends a short frame sequence to an anti-spoofing model interface
-- Allows handoff to face recognition only after anti-spoofing returns `real`
-- Denies access on `spoof` and `uncertain`
-- Blocks the whole session if a suspicious object appears even once during the session
-- Exposes current runtime status, current decision, events, and session reset through FastAPI
+The current runtime works in this order:
 
-## Current implementation
+1. Read frames continuously from a camera or video file.
+2. Run YOLO object detection first.
+3. If a suspicious object is found, do not allow access.
+4. If no suspicious object is found, run anti-spoofing on a short frame buffer.
+5. Only if the face is confirmed as `real`, allow the face to move forward to the face-recognition gateway stub.
 
-- `app/core`, `app/services`, and `app/utils` contain the new MVP skeleton
-- Camera runs in a dedicated service thread
-- Pipeline runs in a separate background thread
-- YOLO detector is implemented as a pluggable service
-- Default YOLO backend is `mock`, so the project starts even without a real YOLO model
-- Anti-spoofing uses a temporal mock implementation that consumes a frame buffer
-- Face recognition is a stub gateway for future integration
+Suspicious objects include:
+- phone
+- cell phone
+- smartphone
+- mobile phone
+- tablet
+- iPad
+- monitor
+- display
+- screen
+- laptop screen
+- printed photo
+- paper photo
+- photo sheet
 
-## File tree
+## Current behavior
+
+- `phone / screen / tablet / printed photo` in frame -> `DENY`
+- suspicious object removed -> automatic retry starts quickly
+- `anti-spoof == real` and no suspicious object -> `ALLOW`
+- `anti-spoof == spoof/uncertain/low confidence` -> `DENY`, then short automatic retry
+- preview window shows a simple user-facing state:
+  - `REAL`
+  - `FAKE / RETRY`
+
+## YOLO model selection
+
+At runtime the app tries to enable a local Ultralytics model automatically.
+
+Current search order inside `models/`:
+
+1. `yolo26n.pt`
+2. `yolo26s.pt`
+3. `yolo26m.pt`
+4. `yolo11n.pt`
+5. `yolov8n.pt`
+
+If one of these files exists, runtime switches to `YOLO: ULTRALYTICS`.
+If none of them exists, runtime falls back to `YOLO: MOCK`.
+
+Important:
+- `YOLO: MOCK` means real phone detection is not active.
+- `YOLO: ULTRALYTICS` means suspicious-object detection is active.
+
+The repository already contains:
+
+- `models/yolov8n.pt`
+
+So the project can already start with a real YOLO model without extra manual setup.
+
+## Preview overlay
+
+The preview window shows:
+
+- current state
+- current decision
+- current reason
+- suspicious labels
+- YOLO backend
+- loaded YOLO model
+
+Examples:
+
+- `YOLO: ULTRALYTICS`
+- `MODEL: yolov8n.pt`
+- `STATE: REAL`
+- `STATE: FAKE / RETRY`
+
+## Main runtime flow
+
+1. `CameraService` reads the latest frame continuously.
+2. `YoloDetector` checks suspicious objects first.
+3. `OpenCvHaarFaceDetector` finds a face.
+4. `FaceTracker` keeps the active face stable across frames.
+5. `SessionManager` stores state and frame buffer.
+6. `MockTemporalAntiSpoofModel` evaluates a short sequence.
+7. `DecisionEngine` returns `ALLOW`, `DENY`, or retry behavior.
+8. `RecognitionGateway` receives the face only after `ALLOW`.
+
+## Project structure
 
 ```text
 app/
   api/
     routes.py
+  cli/
+    access_preview.py
+    turnstile_kiosk.py
   core/
     decision_engine.py
+    detection_policy.py
     models.py
     pipeline.py
     schemas.py
@@ -52,56 +127,13 @@ app/
   main.py
 tests/
 requirements.txt
+requirements-lock.txt
 README.md
 ```
 
-## Main runtime flow
+## Local setup
 
-1. `CameraService` continuously reads frames.
-2. `AccessControlPipeline` pulls the latest frame in a loop.
-3. `YoloDetector` checks suspicious objects.
-4. `OpenCvHaarFaceDetector` finds faces.
-5. `FaceTracker` keeps one tracked face across frames.
-6. `SessionManager` maintains session state and frame buffer.
-7. `MockTemporalAntiSpoofModel` evaluates a short frame sequence.
-8. `DecisionEngine` decides `allow` or `deny`.
-9. `RecognitionGateway` receives the tracked face only on `allow`.
-
-## Session logic
-
-Session states include:
-
-- `idle`
-- `observing`
-- `suspicious_object_detected`
-- `spoof_detected`
-- `real_detected`
-- `blocked`
-- `cooldown`
-- `allowed`
-
-Rules:
-
-- If YOLO sees a suspicious object during the current session, the session is denied.
-- The same session cannot continue after that object disappears.
-- A new attempt is possible only after cooldown.
-- If anti-spoofing returns `uncertain`, access is denied.
-- YOLO is only an extra security layer. It never proves that a person is real.
-
-## FastAPI endpoints
-
-- `GET /health`
-- `GET /status`
-- `POST /session/reset`
-- `GET /events`
-- `GET /current-decision`
-- `GET /health/runtime`
-
-The legacy routes already present in the repository remain available too.
-
-## Local run
-
-### 1. Create and activate a virtual environment
+### 1. Create a virtual environment
 
 Windows PowerShell:
 
@@ -117,68 +149,85 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-### 3. Start the API and continuous runtime
+## Run modes
 
-```powershell
-python -m app.main
-```
-
-Then open:
-
-- `http://127.0.0.1:8000/health`
-- `http://127.0.0.1:8000/status`
-- `http://127.0.0.1:8000/current-decision`
-- `http://127.0.0.1:8000/events`
-
-### 4. Start with a visible camera window
-
-If you want to see the camera feed on screen, run preview mode:
+### Visible preview with camera
 
 ```powershell
 python -m app.main --preview
 ```
 
-You can also choose a different camera:
+### Visible preview with another camera index
 
 ```powershell
 python -m app.main --preview --camera 1
 ```
 
-Controls:
+### Visible preview with a video file
 
-- `Q` to quit
-- `R` to reset the current session
+```powershell
+python -m app.main --preview --video "D:\face_liveness_minivision\vid_1.mp4"
+```
 
-FastAPI stays available during preview unless you add `--no-api` to `python -m app.cli.access_preview`.
+### API only
 
-## Config via environment
+```powershell
+python -m app.main
+```
+
+### Optional script entry point
+
+```powershell
+face-liveness-api
+```
+
+## Preview controls
+
+- `Q` -> quit
+- `R` -> reset the current session
+
+## FastAPI endpoints
+
+- `GET /health`
+- `GET /status`
+- `POST /session/reset`
+- `GET /events`
+- `GET /current-decision`
+- `GET /health/runtime`
+
+Legacy routes already present in the repository are still included too.
+
+## Environment overrides
 
 Examples:
 
 ```powershell
 $env:ACCESS_CAMERA__INDEX="0"
-$env:ACCESS_YOLO__BACKEND="mock"
 $env:ACCESS_RUNTIME__AUTOSTART="true"
-python -m app.main
+python -m app.main --preview
 ```
 
-To switch to a real YOLO model later:
+Force a specific YOLO model:
 
 ```powershell
 $env:ACCESS_YOLO__BACKEND="ultralytics"
-$env:ACCESS_YOLO__MODEL_PATH="models\\yolov8n.pt"
-python -m app.main
+$env:ACCESS_YOLO__MODEL_PATH="models\\yolo26s.pt"
+python -m app.main --preview
 ```
 
 ## Tests
+
+Run the test suite with:
 
 ```powershell
 python -m pytest -q
 ```
 
+The current repository state passes the local test suite.
+
 ## Notes
 
-- This is an MVP skeleton, not a finished high-security product.
-- The anti-spoofing module is intentionally replaceable.
-- The current face detector is lightweight and chosen to keep the MVP runnable out of the box.
-- For production hardening, replace the mock anti-spoof and mock YOLO path with real models and deployment-specific calibration.
+- The anti-spoof module is still replaceable and currently uses a temporal mock implementation.
+- Face recognition is a stub gateway for the next stage of integration.
+- For a stronger phone detector, prefer `yolo26n.pt` for better speed or `yolo26s.pt` for higher accuracy.
+- If preview becomes too slow on your machine, use a smaller camera resolution or a lighter YOLO model.

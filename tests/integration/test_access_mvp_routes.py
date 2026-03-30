@@ -30,6 +30,7 @@ class _FakePipeline:
             "camera_running": True,
             "camera_error": None,
             "yolo_backend": "mock",
+            "yolo_model": "mock",
             "anti_spoof_backend": "mock",
             "frame_counter": 11,
             "session": {
