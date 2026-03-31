@@ -7,6 +7,7 @@ from app.config import AntiSpoofSettings, SessionSettings
 from app.core.models import (
     AccessSession,
     AntiSpoofResult,
+    BoundingBox,
     DecisionRecord,
     FramePacket,
     ObjectDetection,
@@ -14,6 +15,7 @@ from app.core.models import (
     TrackedFace,
 )
 from app.services.event_logger import EventLogger
+from app.utils.geometry import bbox_iou
 from app.utils.timers import remaining_seconds
 
 
@@ -62,14 +64,14 @@ class SessionManager:
                 return session
 
         if tracked_face is None:
-            if session.state == SessionState.ALLOWED:
-                return session
             if session.last_seen_at and now - session.last_seen_at > self._session_settings.no_face_reset_seconds:
                 session = self.reset(now, reason="no_face_timeout")
             return session
 
+        if session.track_id is not None and tracked_face.track_id != session.track_id:
+            session = self.reset(now, reason="face_track_changed")
+
         if session.state == SessionState.IDLE:
-            session.session_id = str(uuid.uuid4())
             session.started_at = now
             session.state = SessionState.OBSERVING
 
@@ -91,7 +93,7 @@ class SessionManager:
         labels = ", ".join(session.suspicious_object_types)
         session.blocked_reason = f"Suspicious object detected: {labels}"
         session.frame_buffer.clear()
-        session.last_anti_spoof_result = None
+        self._clear_anti_spoof_cache()
 
     def update_suspicious_state(self, objects: list[ObjectDetection], now: float) -> None:
         session = self._session
@@ -111,10 +113,44 @@ class SessionManager:
             return
         self._clear_suspicious_state()
 
-    def record_anti_spoof_result(self, result: AntiSpoofResult | None) -> None:
+    def should_reuse_anti_spoof(
+        self,
+        frame_packet: FramePacket,
+        tracked_face: TrackedFace,
+    ) -> bool:
+        session = self._session
+        if session.last_anti_spoof_result is None:
+            return False
+        if session.last_anti_spoof_frame_id is None or session.last_anti_spoof_at is None:
+            return False
+        if session.last_anti_spoof_bbox is None:
+            return False
+        if frame_packet.frame_id - session.last_anti_spoof_frame_id >= self._anti_spoof_settings.inference_interval_frames:
+            return False
+        if frame_packet.timestamp - session.last_anti_spoof_at >= self._anti_spoof_settings.max_cached_result_age_seconds:
+            return False
+        if bbox_iou(tracked_face.bbox, session.last_anti_spoof_bbox) < self._anti_spoof_settings.rerun_iou_threshold:
+            return False
+        return True
+
+    def record_anti_spoof_result(
+        self,
+        result: AntiSpoofResult | None,
+        frame_packet: FramePacket,
+        tracked_face: TrackedFace,
+    ) -> None:
         if result is None:
             return
-        self._session.last_anti_spoof_result = result
+        session = self._session
+        session.last_anti_spoof_result = result
+        session.last_anti_spoof_frame_id = frame_packet.frame_id
+        session.last_anti_spoof_at = frame_packet.timestamp
+        session.last_anti_spoof_bbox = BoundingBox(
+            x=tracked_face.bbox.x,
+            y=tracked_face.bbox.y,
+            width=tracked_face.bbox.width,
+            height=tracked_face.bbox.height,
+        )
 
     def apply_decision(self, decision: DecisionRecord, now: float) -> None:
         session = self._session
@@ -180,6 +216,13 @@ class SessionManager:
         session.cooldown_until = None
         session.last_suspicious_at = None
         session.frame_buffer.clear()
-        session.last_anti_spoof_result = None
+        self._clear_anti_spoof_cache()
         if session.state in {SessionState.SUSPICIOUS_OBJECT_DETECTED, SessionState.BLOCKED}:
             session.state = SessionState.OBSERVING
+
+    def _clear_anti_spoof_cache(self) -> None:
+        session = self._session
+        session.last_anti_spoof_result = None
+        session.last_anti_spoof_frame_id = None
+        session.last_anti_spoof_at = None
+        session.last_anti_spoof_bbox = None

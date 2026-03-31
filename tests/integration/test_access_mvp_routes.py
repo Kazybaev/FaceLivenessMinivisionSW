@@ -29,10 +29,22 @@ class _FakePipeline:
             "runtime_running": True,
             "camera_running": True,
             "camera_error": None,
+            "camera_source": 0,
             "yolo_backend": "mock",
             "yolo_model": "mock",
             "anti_spoof_backend": "mock",
+            "active_liveness_backend": "mock",
             "frame_counter": 11,
+            "ready": False,
+            "readiness_issues": ["real_yolo_backend_unavailable"],
+            "performance": {
+                "processed_fps": 8.4,
+                "last_process_ms": 110.2,
+                "avg_process_ms": 96.1,
+                "frames_processed_total": 11,
+                "anti_spoof_cache_hits": 2,
+                "anti_spoof_inferences": 4,
+            },
             "session": {
                 "session_id": "session-42",
                 "state": SessionState.OBSERVING,
@@ -69,12 +81,16 @@ class TestAccessMvpRoutes:
         decision_response = client.get("/current-decision")
         events_response = client.get("/events")
         reset_response = client.post("/session/reset")
+        ready_response = client.get("/ready")
 
         assert status_response.status_code == 200
         assert status_response.json()["runtime_running"] is True
+        assert status_response.json()["performance"]["processed_fps"] == 8.4
         assert decision_response.status_code == 200
         assert decision_response.json()["decision"]["state"] == "spoof_detected"
         assert events_response.status_code == 200
         assert events_response.json()["events"] == []
         assert reset_response.status_code == 200
         assert reset_response.json()["session_id"] == "session-reset"
+        assert ready_response.status_code == 200
+        assert ready_response.json()["status"] == "not_ready"

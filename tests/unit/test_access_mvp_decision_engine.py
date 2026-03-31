@@ -8,6 +8,8 @@ from app.core.detection_policy import should_block_session
 from app.core.decision_engine import DecisionEngine
 from app.core.models import (
     AccessSession,
+    ActiveLivenessResult,
+    ActiveLivenessVerdict,
     AntiSpoofLabel,
     AntiSpoofResult,
     BoundingBox,
@@ -23,7 +25,7 @@ def _session() -> AccessSession:
 
 class TestAccessMvpDecisionEngine:
     def test_suspicious_object_blocks_session(self):
-        engine = DecisionEngine(SessionSettings(), AntiSpoofSettings())
+        engine = DecisionEngine(SessionSettings(), AntiSpoofSettings(), active_liveness_required=False)
         session = _session()
         detections = [
             ObjectDetection(
@@ -33,14 +35,18 @@ class TestAccessMvpDecisionEngine:
             )
         ]
 
-        decision = engine.evaluate(session, detections, None, time.monotonic())
+        decision = engine.evaluate(session, detections, None, None, time.monotonic())
 
         assert decision is not None
         assert decision.verdict == DecisionVerdict.DENY
         assert decision.state == SessionState.SUSPICIOUS_OBJECT_DETECTED
 
     def test_real_anti_spoof_allows(self):
-        engine = DecisionEngine(SessionSettings(), AntiSpoofSettings(real_confidence_threshold=0.75))
+        engine = DecisionEngine(
+            SessionSettings(),
+            AntiSpoofSettings(real_confidence_threshold=0.75),
+            active_liveness_required=False,
+        )
         session = _session()
         anti_spoof = AntiSpoofResult(
             label=AntiSpoofLabel.REAL,
@@ -48,30 +54,35 @@ class TestAccessMvpDecisionEngine:
             model_name="mock_temporal_v1",
         )
 
-        decision = engine.evaluate(session, [], anti_spoof, time.monotonic())
+        decision = engine.evaluate(session, [], anti_spoof, None, time.monotonic())
 
         assert decision is not None
         assert decision.verdict == DecisionVerdict.ALLOW
         assert decision.state == SessionState.REAL_DETECTED
         assert decision.allow_face_recognition is True
 
-    def test_uncertain_anti_spoof_denies(self):
-        engine = DecisionEngine(SessionSettings(), AntiSpoofSettings())
+    def test_uncertain_anti_spoof_stays_pending_without_strong_fake_signal(self):
+        engine = DecisionEngine(SessionSettings(), AntiSpoofSettings(), active_liveness_required=False)
         session = _session()
         anti_spoof = AntiSpoofResult(
             label=AntiSpoofLabel.UNCERTAIN,
             confidence=0.55,
             model_name="mock_temporal_v1",
+            details={"combined_real": 0.56, "dl_fake": 0.18},
         )
 
-        decision = engine.evaluate(session, [], anti_spoof, time.monotonic())
+        decision = engine.evaluate(session, [], anti_spoof, None, time.monotonic())
 
         assert decision is not None
-        assert decision.verdict == DecisionVerdict.DENY
-        assert decision.state == SessionState.SPOOF_DETECTED
+        assert decision.verdict == DecisionVerdict.PENDING
+        assert decision.state == SessionState.OBSERVING
 
     def test_suspicious_object_hard_block_beats_real_anti_spoof(self):
-        engine = DecisionEngine(SessionSettings(), AntiSpoofSettings(real_confidence_threshold=0.75))
+        engine = DecisionEngine(
+            SessionSettings(),
+            AntiSpoofSettings(real_confidence_threshold=0.75),
+            active_liveness_required=False,
+        )
         session = _session()
         session.blocked_by_suspicious_object = True
         session.suspicious_object_seen = True
@@ -82,14 +93,18 @@ class TestAccessMvpDecisionEngine:
             model_name="mock_temporal_v1",
         )
 
-        decision = engine.evaluate(session, [], anti_spoof, time.monotonic())
+        decision = engine.evaluate(session, [], anti_spoof, None, time.monotonic())
 
         assert decision is not None
         assert decision.verdict == DecisionVerdict.DENY
         assert decision.reason == "Suspicious object detected: phone. Remove it and try again"
 
     def test_real_is_allowed_again_after_suspicious_flag_is_cleared(self):
-        engine = DecisionEngine(SessionSettings(), AntiSpoofSettings(real_confidence_threshold=0.75))
+        engine = DecisionEngine(
+            SessionSettings(),
+            AntiSpoofSettings(real_confidence_threshold=0.75),
+            active_liveness_required=False,
+        )
         session = _session()
         session.blocked_by_suspicious_object = False
         session.suspicious_object_seen = False
@@ -100,7 +115,7 @@ class TestAccessMvpDecisionEngine:
             model_name="mock_temporal_v1",
         )
 
-        decision = engine.evaluate(session, [], anti_spoof, time.monotonic())
+        decision = engine.evaluate(session, [], anti_spoof, None, time.monotonic())
 
         assert decision is not None
         assert decision.verdict == DecisionVerdict.ALLOW
@@ -127,3 +142,100 @@ class TestAccessMvpDecisionEngine:
 
         assert should_block is True
         assert types == ["phone", "screen"]
+
+    def test_real_anti_spoof_is_not_enough_without_live_response(self):
+        engine = DecisionEngine(SessionSettings(), AntiSpoofSettings(real_confidence_threshold=0.75))
+        session = _session()
+        anti_spoof = AntiSpoofResult(
+            label=AntiSpoofLabel.REAL,
+            confidence=0.91,
+            model_name="minifasnet",
+        )
+
+        decision = engine.evaluate(session, [], anti_spoof, None, time.monotonic())
+
+        assert decision is not None
+        assert decision.verdict == DecisionVerdict.PENDING
+        assert decision.reason == "Blink or turn your head slightly"
+
+    def test_allow_requires_both_passive_and_active_liveness(self):
+        engine = DecisionEngine(SessionSettings(), AntiSpoofSettings(real_confidence_threshold=0.75))
+        session = _session()
+        anti_spoof = AntiSpoofResult(
+            label=AntiSpoofLabel.REAL,
+            confidence=0.93,
+            model_name="minifasnet",
+        )
+        active = ActiveLivenessResult(
+            verdict=ActiveLivenessVerdict.REAL,
+            confidence=0.84,
+            reason="Live facial response confirmed",
+        )
+
+        decision = engine.evaluate(session, [], anti_spoof, active, time.monotonic())
+
+        assert decision is not None
+        assert decision.verdict == DecisionVerdict.ALLOW
+        assert decision.reason == "Real person confirmed"
+
+    def test_failed_live_response_denies_even_if_anti_spoof_is_real(self):
+        engine = DecisionEngine(SessionSettings(), AntiSpoofSettings(real_confidence_threshold=0.75))
+        session = _session()
+        anti_spoof = AntiSpoofResult(
+            label=AntiSpoofLabel.REAL,
+            confidence=0.96,
+            model_name="minifasnet",
+        )
+        active = ActiveLivenessResult(
+            verdict=ActiveLivenessVerdict.FAILED,
+            confidence=0.78,
+            reason="Blink or turn your head slightly and try again",
+        )
+
+        decision = engine.evaluate(session, [], anti_spoof, active, time.monotonic())
+
+        assert decision is not None
+        assert decision.verdict == DecisionVerdict.DENY
+        assert decision.state == SessionState.SPOOF_DETECTED
+
+    def test_active_liveness_can_rescue_soft_uncertain_passive_score(self):
+        engine = DecisionEngine(SessionSettings(), AntiSpoofSettings(real_confidence_threshold=0.75))
+        session = _session()
+        anti_spoof = AntiSpoofResult(
+            label=AntiSpoofLabel.UNCERTAIN,
+            confidence=0.57,
+            model_name="minifasnet",
+            details={"combined_real": 0.64, "dl_real": 0.72, "dl_fake": 0.18},
+        )
+        active = ActiveLivenessResult(
+            verdict=ActiveLivenessVerdict.REAL,
+            confidence=0.86,
+            reason="Live facial response confirmed",
+        )
+
+        decision = engine.evaluate(session, [], anti_spoof, active, time.monotonic())
+
+        assert decision is not None
+        assert decision.verdict == DecisionVerdict.ALLOW
+        assert decision.reason == "Real person confirmed with active live response"
+
+    def test_uncertain_with_strong_fake_signal_still_denies(self):
+        engine = DecisionEngine(SessionSettings(), AntiSpoofSettings(real_confidence_threshold=0.75))
+        session = _session()
+        anti_spoof = AntiSpoofResult(
+            label=AntiSpoofLabel.UNCERTAIN,
+            confidence=0.63,
+            model_name="minifasnet",
+            details={"combined_real": 0.39, "dl_fake": 0.72},
+        )
+        active = ActiveLivenessResult(
+            verdict=ActiveLivenessVerdict.REAL,
+            confidence=0.84,
+            reason="Live facial response confirmed",
+        )
+
+        decision = engine.evaluate(session, [], anti_spoof, active, time.monotonic())
+
+        assert decision is not None
+        assert decision.verdict == DecisionVerdict.DENY
+        assert decision.reason == "Spoof signals are too strong. Try again"

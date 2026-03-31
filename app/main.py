@@ -9,8 +9,8 @@ from fastapi import FastAPI
 
 from app.api.routes import router as access_router
 from app.config import Settings as AccessSettings
-from app.config import enable_phone_detector
 from app.config import get_settings as get_access_settings
+from app.config import prepare_runtime_settings
 from app.core.pipeline import AccessControlPipeline
 from app.infrastructure.config import get_settings as get_legacy_settings
 from app.infrastructure.logging_setup import setup_logging
@@ -22,7 +22,7 @@ def create_app(access_settings: AccessSettings | None = None) -> FastAPI:
     setup_logging()
 
     legacy_settings = get_legacy_settings()
-    runtime_settings = access_settings or get_access_settings()
+    runtime_settings = prepare_runtime_settings(access_settings or get_access_settings())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -40,8 +40,8 @@ def create_app(access_settings: AccessSettings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     setup_middleware(app, legacy_settings.api.cors_origins)
-    app.include_router(router)
     app.include_router(access_router)
+    app.include_router(router)
     app.state.access_pipeline = AccessControlPipeline(runtime_settings)
 
     return app
@@ -74,8 +74,7 @@ def run(argv: list[str] | None = None) -> None:
         preview_main(preview_args)
         return
 
-    settings = get_access_settings().model_copy(deep=True)
-    settings = enable_phone_detector(settings)
+    settings = prepare_runtime_settings(get_access_settings())
     if args.camera is not None:
         settings.camera.index = args.camera
     if args.video is not None:

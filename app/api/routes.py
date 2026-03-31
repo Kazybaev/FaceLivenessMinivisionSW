@@ -41,4 +41,16 @@ async def current_decision(request: Request):
 @router.get("/health/runtime", response_model=HealthResponse)
 async def runtime_health(request: Request):
     status = _runtime(request).get_status()
-    return HealthResponse(status="ok" if status["runtime_running"] else "starting")
+    return HealthResponse(
+        status="ok" if status["runtime_running"] else "starting",
+        issues=list(status.get("readiness_issues", [])),
+    )
+
+
+@router.get("/ready", response_model=HealthResponse)
+async def ready(request: Request):
+    status = _runtime(request).get_status()
+    return HealthResponse(
+        status="ready" if status["ready"] else "not_ready",
+        issues=list(status.get("readiness_issues", [])),
+    )

@@ -8,7 +8,7 @@ import time
 import cv2
 import numpy as np
 
-from app.config import Settings, enable_phone_detector, get_settings
+from app.config import Settings, get_settings, prepare_runtime_settings
 from app.core.pipeline import AccessControlPipeline
 from app.infrastructure.logging_setup import setup_logging
 from app.main import create_app
@@ -50,7 +50,7 @@ def _draw_bbox(img, bbox: dict[str, int], color, label: str | None = None) -> No
 def _render_preview(frame: np.ndarray, snapshot: dict[str, object], status: dict[str, object]) -> np.ndarray:
     display = frame.copy()
     height, width = display.shape[:2]
-    cv2.rectangle(display, (0, 0), (width, 150), (8, 8, 12), -1)
+    cv2.rectangle(display, (0, 0), (width, 170), (8, 8, 12), -1)
 
     face = snapshot.get("tracked_face")
     if isinstance(face, dict):
@@ -79,6 +79,11 @@ def _render_preview(frame: np.ndarray, snapshot: dict[str, object], status: dict
 
     decision = snapshot.get("decision") if isinstance(snapshot.get("decision"), dict) else None
     anti_spoof = snapshot.get("anti_spoof_result") if isinstance(snapshot.get("anti_spoof_result"), dict) else None
+    active = (
+        snapshot.get("active_liveness_result")
+        if isinstance(snapshot.get("active_liveness_result"), dict)
+        else None
+    )
     session_state = str(snapshot.get("session_state", "idle")).upper()
     if decision and decision.get("verdict") == "deny":
         session_state = "FAKE / RETRY"
@@ -92,6 +97,15 @@ def _render_preview(frame: np.ndarray, snapshot: dict[str, object], status: dict
         suspicious_line = ", ".join(str(item) for item in suspicious_types) or "none"
     else:
         suspicious_line = "none"
+    performance = status.get("performance") if isinstance(status.get("performance"), dict) else {}
+    processed_fps = float(performance.get("processed_fps", 0.0))
+    avg_process_ms = float(performance.get("avg_process_ms", 0.0))
+    cache_hits = int(performance.get("anti_spoof_cache_hits", 0))
+    anti_inferences = int(performance.get("anti_spoof_inferences", 0))
+    ready = bool(status.get("ready", False))
+    readiness_issues = status.get("readiness_issues", [])
+    readiness_text = "READY" if ready else "NOT READY"
+    readiness_color = (0, 255, 0) if ready else (0, 0, 255)
 
     title_color = (0, 220, 255)
     if decision and decision.get("verdict") == "allow":
@@ -130,8 +144,48 @@ def _render_preview(frame: np.ndarray, snapshot: dict[str, object], status: dict
         0.50,
         1,
     )
+    _draw_text(
+        display,
+        f'ANTI: {str(status.get("anti_spoof_backend", "unknown")).upper()}',
+        880,
+        112,
+        (185, 185, 190),
+        0.50,
+        1,
+    )
+    _draw_text(
+        display,
+        f'ACTIVE: {str(status.get("active_liveness_backend", "unknown")).upper()}',
+        20,
+        128,
+        (185, 185, 190),
+        0.50,
+        1,
+    )
+    _draw_text(display, f"READY: {readiness_text}", 20, 142, readiness_color, 0.55, 2)
+    _draw_text(display, f"FPS: {processed_fps:0.1f}", 180, 142, (185, 185, 190), 0.50, 1)
+    _draw_text(display, f"PROC: {avg_process_ms:0.1f} ms", 290, 142, (185, 185, 190), 0.50, 1)
+    _draw_text(
+        display,
+        f"ANTI CACHE: {cache_hits}/{max(cache_hits + anti_inferences, 1)}",
+        470,
+        142,
+        (185, 185, 190),
+        0.50,
+        1,
+    )
     if status.get("yolo_backend") == "mock":
-        _draw_text(display, "WARNING: YOLO backend is mock, object blocking is inactive", 20, 124, (0, 165, 255), 0.52, 1)
+        _draw_text(display, "WARNING: YOLO backend is mock, object blocking is inactive", 20, 160, (0, 165, 255), 0.52, 1)
+    elif readiness_issues:
+        _draw_text(
+            display,
+            f'ISSUES: {", ".join(str(item) for item in readiness_issues)}',
+            20,
+            160,
+            (0, 165, 255),
+            0.50,
+            1,
+        )
 
     info_y = height - 96
     cv2.rectangle(display, (0, info_y - 34), (width, height), (8, 8, 12), -1)
@@ -154,8 +208,29 @@ def _render_preview(frame: np.ndarray, snapshot: dict[str, object], status: dict
     else:
         _draw_text(display, "ANTI-SPOOF: collecting sequence", 20, info_y, (220, 220, 100), 0.72, 2)
 
+    if active and not decision:
+        active_conf = float(active.get("confidence", 0.0)) * 100.0
+        _draw_text(
+            display,
+            f'LIVE RESPONSE: {str(active.get("verdict", "pending")).upper()} {active_conf:0.1f}%',
+            20,
+            info_y + 32,
+            (120, 220, 180),
+            0.58,
+            1,
+        )
+        _draw_text(
+            display,
+            f'ACTION: {str(active.get("reason", ""))}',
+            20,
+            info_y + 58,
+            (220, 220, 225),
+            0.52,
+            1,
+        )
+
     if blocked_reason:
-        _draw_text(display, blocked_reason, 20, 146, (0, 0, 255), 0.56, 1)
+        _draw_text(display, blocked_reason, 20, 164, (0, 0, 255), 0.52, 1)
     _draw_text(display, f"SUSPICIOUS: {suspicious_line}", 20, height - 24, (120, 200, 255), 0.54, 1)
     _draw_text(display, "Q quit | R reset session", width - 300, height - 24, (170, 170, 180), 0.54, 1)
     return display
@@ -171,8 +246,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     setup_logging()
-    settings = get_settings().model_copy(deep=True)
-    settings = enable_phone_detector(settings)
+    settings = prepare_runtime_settings(get_settings())
     if args.camera is not None:
         settings.camera.index = args.camera
     if args.video is not None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.models import AntiSpoofLabel, DecisionVerdict, EventSeverity, SessionState
 
@@ -10,7 +10,7 @@ class AntiSpoofResultSchema(BaseModel):
     label: AntiSpoofLabel
     confidence: float
     model_name: str
-    details: dict = {}
+    details: dict = Field(default_factory=dict)
 
 
 class DecisionRecordSchema(BaseModel):
@@ -23,7 +23,7 @@ class DecisionRecordSchema(BaseModel):
     reason: str
     timestamp: str
     cooldown_until: float | None = None
-    details: dict = {}
+    details: dict = Field(default_factory=dict)
 
 
 class SecurityEventSchema(BaseModel):
@@ -34,7 +34,7 @@ class SecurityEventSchema(BaseModel):
     severity: EventSeverity
     message: str
     session_id: str | None = None
-    payload: dict = {}
+    payload: dict = Field(default_factory=dict)
 
 
 class SessionSnapshotSchema(BaseModel):
@@ -56,6 +56,17 @@ class SessionSnapshotSchema(BaseModel):
 class HealthResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     status: str
+    issues: list[str] = Field(default_factory=list)
+
+
+class PerformanceSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    processed_fps: float
+    last_process_ms: float
+    avg_process_ms: float
+    frames_processed_total: int
+    anti_spoof_cache_hits: int
+    anti_spoof_inferences: int
 
 
 class StatusResponse(BaseModel):
@@ -63,10 +74,15 @@ class StatusResponse(BaseModel):
     runtime_running: bool
     camera_running: bool
     camera_error: str | None = None
+    camera_source: str | int | None = None
     yolo_backend: str
     yolo_model: str
     anti_spoof_backend: str
+    active_liveness_backend: str
     frame_counter: int
+    ready: bool
+    readiness_issues: list[str]
+    performance: PerformanceSchema
     session: SessionSnapshotSchema
 
 

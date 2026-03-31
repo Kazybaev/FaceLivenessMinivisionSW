@@ -9,6 +9,7 @@ from unittest.mock import patch, MagicMock
 
 from fastapi.testclient import TestClient
 
+from app.config import get_settings as get_access_settings
 from app.main import create_app
 from app.domain.entities import LivenessResult
 from app.domain.enums import LivenessVerdict, DetectionMethod
@@ -16,7 +17,12 @@ from app.domain.enums import LivenessVerdict, DetectionMethod
 
 @pytest.fixture
 def client():
-    app = create_app()
+    settings = get_access_settings().model_copy(deep=True)
+    settings.runtime.autostart = False
+    settings.runtime.auto_enable_local_backends = False
+    settings.runtime.require_real_backends = False
+    settings.active_liveness.enabled = False
+    app = create_app(settings)
     return TestClient(app)
 
 

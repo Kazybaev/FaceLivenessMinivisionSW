@@ -25,6 +25,14 @@ class AntiSpoofLabel(str, Enum):
     UNCERTAIN = "uncertain"
 
 
+class ActiveLivenessVerdict(str, Enum):
+    PENDING = "pending"
+    REAL = "real"
+    FAILED = "failed"
+    SPOOF = "spoof"
+    UNAVAILABLE = "unavailable"
+
+
 class DecisionVerdict(str, Enum):
     PENDING = "pending"
     ALLOW = "allow"
@@ -94,6 +102,14 @@ class AntiSpoofResult:
 
 
 @dataclass(slots=True)
+class ActiveLivenessResult:
+    verdict: ActiveLivenessVerdict
+    confidence: float
+    reason: str
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class DecisionRecord:
     session_id: str
     verdict: DecisionVerdict
@@ -133,5 +149,8 @@ class AccessSession:
     suspicious_labels: set[str] = field(default_factory=set)
     frame_buffer: deque[FramePacket] = field(default_factory=deque)
     last_anti_spoof_result: AntiSpoofResult | None = None
+    last_anti_spoof_frame_id: int | None = None
+    last_anti_spoof_at: float | None = None
+    last_anti_spoof_bbox: BoundingBox | None = None
     last_decision: DecisionRecord | None = None
     blocked_reason: str | None = None

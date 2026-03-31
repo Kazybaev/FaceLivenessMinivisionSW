@@ -3,7 +3,8 @@
 Production-like MVP on Python for:
 - continuous camera or video processing
 - suspicious object detection before face recognition
-- anti-spoofing on a short frame sequence
+- anti-spoofing on a short frame sequence with MiniFASNet + temporal fallback
+- active liveness challenge with MediaPipe face landmarks
 - visible preview window and FastAPI status endpoints
 
 ## What the project does now
@@ -13,8 +14,11 @@ The current runtime works in this order:
 1. Read frames continuously from a camera or video file.
 2. Run YOLO object detection first.
 3. If a suspicious object is found, do not allow access.
-4. If no suspicious object is found, run anti-spoofing on a short frame buffer.
-5. Only if the face is confirmed as `real`, allow the face to move forward to the face-recognition gateway stub.
+4. If no suspicious object is found, run passive anti-spoofing on a short frame buffer.
+5. In parallel, require live facial response evidence from MediaPipe landmarks.
+6. Only if both gates confirm a live person, allow the face to move forward to the face-recognition gateway stub.
+
+The runtime now auto-enables real local backends when assets are present, even when you start it through `python -m app.main`, preview mode, or `uvicorn app.main:app`.
 
 Suspicious objects include:
 - phone
@@ -66,6 +70,35 @@ The repository already contains:
 
 So the project can already start with a real YOLO model without extra manual setup.
 
+## Anti-spoof backend selection
+
+At runtime the app also tries to enable a real MiniFASNet anti-spoof backend automatically.
+
+Current search order:
+
+1. `resources/anti_spoof_models/`
+2. `assets/anti_spoof_models/`
+
+If `.pth` weights are found, runtime switches to `ANTI: MINIFASNET_TEMPORAL`.
+If no weights are found, runtime falls back to `ANTI: MOCK_TEMPORAL`.
+
+The repository already contains:
+
+- `resources/anti_spoof_models/2.7_80x80_MiniFASNetV2.pth`
+- `resources/anti_spoof_models/4_0_0_80x80_MiniFASNetV1SE.pth`
+
+## Active liveness backend selection
+
+At runtime the app also tries to enable a MediaPipe face-landmark backend for active liveness.
+
+Current search order:
+
+1. `resources/face_landmarker.task`
+2. `face_landmarker.task`
+
+If the task file is found, runtime switches to `ACTIVE: MEDIAPIPE_ACTIVE_LIVENESS`.
+If it is not found, runtime falls back to `ACTIVE: MOCK_UNAVAILABLE`.
+
 ## Preview overlay
 
 The preview window shows:
@@ -74,13 +107,21 @@ The preview window shows:
 - current decision
 - current reason
 - suspicious labels
+- readiness
+- processed FPS
+- average processing latency
+- active liveness backend
 - YOLO backend
 - loaded YOLO model
+- anti-spoof backend
 
 Examples:
 
 - `YOLO: ULTRALYTICS`
 - `MODEL: yolov8n.pt`
+- `ANTI: MINIFASNET_TEMPORAL`
+- `ACTIVE: MEDIAPIPE_ACTIVE_LIVENESS`
+- `READY: READY`
 - `STATE: REAL`
 - `STATE: FAKE / RETRY`
 
@@ -91,9 +132,10 @@ Examples:
 3. `OpenCvHaarFaceDetector` finds a face.
 4. `FaceTracker` keeps the active face stable across frames.
 5. `SessionManager` stores state and frame buffer.
-6. `MockTemporalAntiSpoofModel` evaluates a short sequence.
-7. `DecisionEngine` returns `ALLOW`, `DENY`, or retry behavior.
-8. `RecognitionGateway` receives the face only after `ALLOW`.
+6. `MiniFASNetTemporalAntiSpoofModel` evaluates a short sequence and reuses fresh results for nearby frames to reduce CPU load.
+7. `MediaPipeActiveLivenessService` asks for live facial evidence such as blink or head response.
+8. `DecisionEngine` returns `ALLOW`, `DENY`, or retry behavior.
+9. `RecognitionGateway` receives the face only after `ALLOW`.
 
 ## Project structure
 
@@ -190,6 +232,7 @@ face-liveness-api
 
 - `GET /health`
 - `GET /status`
+- `GET /ready`
 - `POST /session/reset`
 - `GET /events`
 - `GET /current-decision`
@@ -227,7 +270,8 @@ The current repository state passes the local test suite.
 
 ## Notes
 
-- The anti-spoof module is still replaceable and currently uses a temporal mock implementation.
+- The passive anti-spoof module is replaceable. The preferred runtime backend is MiniFASNet; temporal mock is only a fallback when weights are unavailable.
+- The active liveness gate is enabled by default and blocks `ALLOW` until live facial response is confirmed.
 - Face recognition is a stub gateway for the next stage of integration.
 - For a stronger phone detector, prefer `yolo26n.pt` for better speed or `yolo26s.pt` for higher accuracy.
 - If preview becomes too slow on your machine, use a smaller camera resolution or a lighter YOLO model.
