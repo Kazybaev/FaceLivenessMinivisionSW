@@ -1,0 +1,1 @@
+"""MiniFAS model library."""

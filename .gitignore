@@ -1,7 +1,9 @@
-.idea
-.venv/
 __pycache__/
 *.pyc
-*.egg-info/
+*.pyo
+*.pyd
 .pytest_cache/
-saved_logs/
+.venv/
+venv/
+.env
+logs/
